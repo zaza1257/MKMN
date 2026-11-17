@@ -1,0 +1,10 @@
+[package]
+name = "vswhom-sys"
+version = "0.1.3"
+edition = "2021"
+license = "MIT"
+description = "Local stub replacement for the vswhom-sys crate: reports 'no Visual Studio / Windows SDK found' so SDK discovery is handled by the repo's native-sdk setup instead. Provenance: vendored in-repo (see README.md)."
+
+
+[dependencies]
+libc = "0.2"

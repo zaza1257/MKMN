@@ -1,0 +1,159 @@
+import { describe, expect, it } from "vitest";
+import { fastVoiceModel, voiceMenuItems, voiceModelNear, otherVoiceItems, pickVoiceItem } from "../src/core/voicePick";
+import { spokenPrefix, markInterruption, INTERRUPT_MARK } from "../src/core/spoken";
+import { endSilenceFor } from "../src/core/endpoint";
+import type { CatalogItem } from "../src/shared/api";
+
+const item = (name: string, sizeGB: number, extra: Partial<CatalogItem["entry"]> = {}, runsOn?: CatalogItem["runsOn"]): CatalogItem => ({
+  entry: { id: name, name, sizeGB, engine: "llama_cpp", ...extra } as CatalogItem["entry"],
+  verdict: {} as CatalogItem["verdict"], hidden: false, installed: true, ref: name, custom: false, runsOn
+});
+
+describe("the model of a voice conversation", () => {
+  const qwen3 = item("Qwen3-1.7B", 1.4, { engine: "qairt" });
+  const phi = item("Phi-4-mini (Foundry Local)", 2.4, { id: "foundry:phi-4-mini" });
+  const coder = item("Qwen2.5-Coder-0.5B", 0.5);
+  const big = item("Qwen3.5-9B", 6);
+  const q35 = item("Qwen3.5-2B", 1.9);
+  const q35f = item("Qwen3.5-2B (Foundry Local)", 1.9, { id: "foundry:qwen3.5-2b" });
+  it("stays the 2B by default even when the 4B is installed; the menu lists both", () => {
+    const q4 = item("Qwen3.5-4B", 2.8);
+    expect(fastVoiceModel([coder, q4, q35])).toBe(q35);
+    expect(voiceMenuItems([q4, q35f, q35, phi])).toEqual([q35, q4]);
+  });
+  it("is Qwen3.5-2B when installed, the GenieX build before Foundry's", () => {
+    expect(fastVoiceModel([coder, big, phi, qwen3, q35f, q35])).toBe(q35);
+    expect(fastVoiceModel([phi, qwen3, q35f])).toBe(q35f);
+  });
+  it("otherwise the best small model measured wholly on the NPU, never a coder, a big one or the two that repeat themselves", () => {
+    expect(fastVoiceModel([coder, big, phi, qwen3])).toBeNull();
+    expect(fastVoiceModel([coder, big])).toBeNull();
+  });
+  it("is the conversation's model when none is installed, or when asked", () => {
+    expect(pickVoiceItem([big], "", big)).toBe(big);
+    expect(pickVoiceItem([qwen3, big], "chat", big)).toBe(big);
+    expect(pickVoiceItem([qwen3, q35, big], "", big)).toBe(q35);
+  });
+  it("is the one chosen by id, if it is still installed", () => {
+    expect(pickVoiceItem([qwen3, big], "Qwen3.5-9B", qwen3)).toBe(big);
+    expect(pickVoiceItem([qwen3], "Qwen3.5-9B", qwen3)).toBe(qwen3);
+  });
+});
+
+describe("what was said before being cut", () => {
+  it("keeps the sentences heard, and the words of the one cut", () => {
+    const s = [
+      { text: "First sentence here.", playedSec: 2, totalSec: 2 },
+      { text: "one two three four five six seven eight nine ten", playedSec: 1, totalSec: 2 },
+      { text: "Never heard.", playedSec: 0, totalSec: 1 }
+    ];
+    expect(spokenPrefix(s)).toBe("First sentence here. one two three four five");
+  });
+  it("guesses the length of a sentence whose audio is still arriving, and says nothing if nothing was heard", () => {
+    expect(spokenPrefix([{ text: "a b c d e f g h i j k l m n o p q r s t", playedSec: 0.5, totalSec: null }]).split(" ").length).toBeLessThan(10);
+    expect(spokenPrefix([{ text: "Nothing.", playedSec: 0, totalSec: null }])).toBe("");
+  });
+});
+
+describe("waiting before answering", () => {
+  const f = { done: 0.7, open: 1.2 };
+  it("waits 2-3 seconds in voice chat, a little less after a finished sentence", () => {
+    expect(endSilenceFor("What time is it?", 2500, f)).toBe(1750);
+    expect(endSilenceFor("I would like to know if", 2500, f)).toBe(3000);
+    expect(endSilenceFor("tell me about dogs", 2500, f)).toBe(2500);
+  });
+});
+
+import { visualsOf } from "../src/core/visuals";
+import { toSpeechText } from "../src/core/speechText";
+
+describe("charts and pictures in a voice chat", () => {
+  const answer = 'Here it is.\n```chart\n{"type":"bar"}\n```\nThe bars grow.\n![A cat](wikimedia:Cat.jpg)\nDone.';
+  it("are taken out of the answer for the screen, and never read aloud", () => {
+    expect(visualsOf(answer)).toBe('```chart\n{"type":"bar"}\n```\n\n![A cat](wikimedia:Cat.jpg)');
+    expect(toSpeechText(answer)).toBe("Here it is.\nThe bars grow.\nDone.");
+  });
+  it("leave out a chart that is still being written", () => {
+    expect(visualsOf('Look.\n```chart\n{"type":"li')).toBe('```chart\n{"type":"li');
+    expect(visualsOf('Here.\n```mermaid\nflowchart TD\n  A --> B\n```\nThere.')).toBe("```mermaid\nflowchart TD\n  A --> B\n```");
+    expect(visualsOf("Here.\n```mermaid\nflowchart TD\n  A -->")).toBe("```mermaid\nflowchart TD\n  A -->");
+  });
+});
+
+import { compactVisuals, visualNeeds } from "../src/core/visuals";
+
+describe("keeping the voice context small", () => {
+  it("an old chart or picture becomes a one-line note, and is never read aloud if copied", () => {
+    const c = compactVisuals('Here.\n```chart\n{"type":"bar","title":"Sales","series":[]}\n```\n![A cat](wikimedia:Cat.jpg)');
+    expect(c).toBe('Here.\n[A bar chart "Sales" was shown on screen.]\n[A picture was shown on screen: A cat.]');
+    expect(toSpeechText(c)).toBe("Here.");
+  });
+  it("the instructions for charts and pictures are given only when asked for, or to change the chart just shown", () => {
+    expect(visualNeeds("What is the weather like in Paris?")).toEqual({ chart: false, diagram: false, picture: false });
+    expect(visualNeeds("Make me a chart of compound interest").chart).toBe(true);
+    expect(visualNeeds("Make me a diagram of the ordering process").diagram).toBe(true);
+    expect(visualNeeds("show me a plot of sin(x)").chart).toBe(true);
+    expect(visualNeeds("Show me a photo of a cat").picture).toBe(true);
+    expect(visualNeeds("what does a red panda look like").picture).toBe(true);
+    expect(visualNeeds("and with 5 %?", '```chart\n{"type":"line"}\n```').chart).toBe(true);
+    expect(visualNeeds("and with 5 %?", "An answer with no chart.").chart).toBe(false);
+  });
+});
+
+import { wantsCloseVisual } from "../src/core/visuals";
+
+describe("closing a chart or picture by voice", () => {
+  it("understands the request, and leaves other requests alone", () => {
+    for (const t of ["Remove the chart", "close that", "Can you take that away?", "close the chart", "hide that", "get rid of it", "hide the frame"]) expect(wantsCloseVisual(t), t).toBe(true);
+    for (const t of ["Tell me a story", "What is the weather like?", "remove the salt from the recipe", "show me a chart"]) expect(wantsCloseVisual(t), t).toBe(false);
+  });
+});
+
+describe("the automatic voice model follows the chat model's size", () => {
+  const q2 = item("Qwen3.5-2B", 1.9), q4 = item("Qwen3.5-4B", 2.8), big = item("Qwen3.5-9B", 6), small = item("Gemma-3-1B-it", 0.8);
+  it("is always the 2B or the 4B, whichever is nearer", () => {
+    expect(voiceModelNear([q2, q4, big], 2)?.entry.name).toBe("Qwen3.5-2B");
+    expect(voiceModelNear([q2, q4, big], 1)?.entry.name).toBe("Qwen3.5-2B");
+    expect(voiceModelNear([q2, q4, big], 4)?.entry.name).toBe("Qwen3.5-4B");
+    expect(voiceModelNear([q2, q4, big], 9)?.entry.name).toBe("Qwen3.5-4B");
+    expect(voiceModelNear([q4], 2)?.entry.name).toBe("Qwen3.5-4B");
+    expect(voiceModelNear([q2], 9)?.entry.name).toBe("Qwen3.5-2B");
+  });
+  it("reads the size of a Dynamic pack from its biggest model", () => {
+    const dyn = { ...item("Dynamic Flux 4B", 0, { id: "dynamic:4B" }) };
+    (dyn.entry as any).paramsB = 4;
+    expect(pickVoiceItem([q2, q4], "", dyn)).toBe(q4);
+    (dyn.entry as any).paramsB = 2;
+    expect(pickVoiceItem([q2, q4], "", dyn)).toBe(q2);
+  });
+  it("keeps a manual choice, and lists other models apart", () => {
+    expect(pickVoiceItem([q2, q4, big], "Qwen3.5-9B", q2)).toBe(big);
+    expect(otherVoiceItems([q2, q4, big, small]).map((i) => i.entry.name)).toEqual(["Qwen3.5-9B", "Gemma-3-1B-it"]);
+  });
+});
+
+describe("an interrupted answer keeps all its text and marks where it was cut", () => {
+  const content = "**Doi Moi** means renewal. In 1986 Vietnam moved to a market economy.\n\n```chart\n{}\n```\nShall we go on?";
+  const prose = "Doi Moi means renewal. In 1986 Vietnam moved to a market economy.\nShall we go on?";
+  it("puts the mark after the last word that was said, the rest follows it", () => {
+    const out = markInterruption(content, 5, prose);
+    expect(out.startsWith("**Doi Moi** means renewal. In " + INTERRUPT_MARK)).toBe(true);
+    expect(out).toContain("Vietnam moved to a market economy.");
+    expect(out).toContain("Shall we go on?");
+  });
+  it("marks the very start when nothing was heard, and the end when the point is not found", () => {
+    expect(markInterruption("Hello there.", 0, "Hello there.")).toBe(`${INTERRUPT_MARK} Hello there.`);
+    expect(markInterruption("Hello there.", 9, "other words entirely")).toBe(`Hello there. ${INTERRUPT_MARK}`);
+  });
+});
+
+describe("what was heard of an answer", () => {
+  it("counts a sentence with no sound as said, so it never holds back the next ones", () => {
+    const out = spokenPrefix([
+      { text: "First sentence here.", playedSec: 2, totalSec: 2 },
+      { text: "(1)", playedSec: 0, totalSec: 0 },
+      { text: "one two three four", playedSec: 1, totalSec: 2 }
+    ]);
+    expect(out).toBe("First sentence here. (1) one two");
+  });
+});

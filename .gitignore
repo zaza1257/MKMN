@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build and packaging outputs
+dist/
+release/
+out/
+build/windows/
+*.exe
+*.dll
+*.nsis
+
+# Logs and environment
+*.log
+.env
+.env.*
+!.env.example
+
+# Tournament scratch runtime (PID file, scratch settings, serve logs)
+scripts/.tournament/
+
+# Temporary / Archive directories
+_archive/
+.archive/
+
+# Signing material and other private keys (never committed; supplied by the signing process)
+*.pem
+*.key
+*.pfx
+*.p12
+*.snk
+
+# Tool caches and generated output
+*.tsbuildinfo
+coverage/
+.vite/
+__pycache__/
+*.pyc
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+.xwin-cache/
+src-tauri/target/
+prototype-tauri/target/

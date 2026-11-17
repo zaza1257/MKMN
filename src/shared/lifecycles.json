@@ -1,0 +1,326 @@
+{
+  "version": 1,
+  "note": "Every lifecycle the scan can find, with who owns it and how it is handled. `classification` is one of: migrated (in src/shared/stateMachines.json), not-migrated (a real machine with states and events that is not in the registry yet) or not-a-machine (a status label, boolean, linear progress value or one-shot classification with no transitions to guard). `scan` lists the lifecycle-scan keys this entry covers; every key scripts/lib/lifecycle-scan.mjs returns must appear exactly once.",
+  "lifecycles": [
+    {
+      "id": "server",
+      "title": "Model server",
+      "owner": "Rust host, Node sidecar, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src-tauri/src/state_machine.rs; src/shared/stateMachines.json",
+      "reason": "Registered machine `server`. The generated Rust enum is the host's source of truth and the renderer reads the same names.",
+      "scan": []
+    },
+    {
+      "id": "voice",
+      "title": "Voice chat and the voice worker",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/renderer/voiceChat.ts; src/core/voiceService.ts",
+      "reason": "Registered machine `voice` for the conversation; the worker's own off/starting/ready/failed is covered by the same entry.",
+      "scan": ["src/shared/types.ts:VoiceStatus.worker"]
+    },
+    {
+      "id": "build",
+      "title": "File build, its steps and its stages",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/build.ts",
+      "reason": "Registered machine `build` for the overall result; the step and stage statuses are its supporting labels.",
+      "scan": ["src/shared/types.ts:BuildStage.status", "src/shared/types.ts:BuildStep.status"]
+    },
+    {
+      "id": "bench",
+      "title": "Model benchmark run",
+      "owner": "core, sidecar",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/benchRunner.ts:30 (`BenchPhase`)",
+      "reason": "Registered machine `bench`. The runner's every phase change in `set` goes through `canTransition('bench', …)`; the transitions were taken from the real paths, including the provider-retry loading → installing move.",
+      "scan": ["src/core/benchRunner.ts:BenchPhase"]
+    },
+    {
+      "id": "setup",
+      "title": "First-launch setup steps",
+      "owner": "core",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/setupView.ts:7 (`StepState`); src/core/setupService.ts",
+      "reason": "Registered machine `setup`. Each step's state change goes through `canTransition('setup', …)` in SetupService.set, so an impossible move is reported.",
+      "scan": ["src/core/setupView.ts:StepState"]
+    },
+    {
+      "id": "run",
+      "title": "Harness run",
+      "owner": "core",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/harness/run.ts (`RunState`)",
+      "reason": "Registered machine `run`. Every createRun moves through nextState('run', ...) per step and at the outcome; an illegal move is logged, never a crash mid-run. A journal step's status is a record label of the same machine, and the run view sent to the screen (phase 11) carries the same labels, read-only.",
+      "scan": ["src/core/harness/run.ts:RunState", "src/core/harness/journal.ts:StepStatus", "src/shared/types.ts:RunStepView.status"]
+    },
+    {
+      "id": "knowledgeIndex",
+      "title": "Knowledge index of one project",
+      "owner": "sidecar, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/knowledge/store.ts (the build drives the events); src/renderer/Projects.tsx (the observed state)",
+      "reason": "Registered machine `knowledgeIndex`. The store's build goes through the machine's events; the Project knowledge screen shows the state observed from the store.",
+      "scan": []
+    },
+    {
+      "id": "agentRun",
+      "title": "Computer Use agent run",
+      "owner": "sidecar, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/sidecar/computerUse.ts (the loop settles it, settle is the only writer of the final status); src/renderer/AgentPanel.tsx (the observed state)",
+      "reason": "Registered machine `agentRun` for the run's verdict (running, done, unresolved, failed, cancelled). The step phases (observe, propose, act, verify, settled) are supporting labels the events carry, read-only — the person's stop settles cancelled, never failed.",
+      "scan": ["src/shared/agent.ts:AgentRunStatus", "src/shared/agent.ts:AgentStepPhase"]
+    },
+    {
+      "id": "metrics",
+      "title": "Observation feed freshness",
+      "owner": "renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/renderer/metricsModel.ts:176 (`ObservationPhase`)",
+      "reason": "A pure function of a reading's timestamp, failure count and the clock, recomputed on every render. Nothing stores a phase and nothing fires events, so there is no move to guard.",
+      "scan": ["src/renderer/metricsModel.ts:ObservationPhase"]
+    },
+    {
+      "id": "preload",
+      "title": "Model preload",
+      "owner": "renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/renderer/preloadController.ts:11 (`PreloadPhase`)",
+      "reason": "Registered machine `preload`. The controller's phase change goes through `canTransition('preload', …)` (a null phase is the machine's idle state), so an impossible move is reported.",
+      "scan": ["src/renderer/preloadController.ts:PreloadPhase"]
+    },
+    {
+      "id": "update",
+      "title": "Application update check",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/core/updater.ts; src/shared/api.ts (`UpdateState`)",
+      "reason": "Structurally a status chain (checking → current/downloading/ready/error) but the updater is disabled: every method forces the error state and there is no transport. It has no transitions to guard until a real update feed exists.",
+      "scan": ["src/core/updater.ts:?.status", "src/shared/api.ts:UpdateState.status"]
+    },
+    {
+      "id": "install",
+      "title": "Model download and install progress",
+      "owner": "core, sidecar",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/shared/types.ts (`InstallProgress.phase`); src/core/geniex.ts",
+      "reason": "A linear progress flow (checking → downloading → done/error/cancelled) where the only changing value is a percentage, not a set of states with events.",
+      "scan": ["src/shared/types.ts:InstallProgress.phase"]
+    },
+    {
+      "id": "voice-download",
+      "title": "Voice model download progress",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/shared/types.ts (`VoiceDownloadProgress.phase`)",
+      "reason": "A linear download progress flow (downloading → extracting → done/error/cancelled); no transitions to guard.",
+      "scan": ["src/shared/types.ts:VoiceDownloadProgress.phase"]
+    },
+    {
+      "id": "npu-test",
+      "title": "NPU load test",
+      "owner": "core, sidecar",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/sidecar/main.ts (`NpuTestState.status`); src/core/npuTest.ts",
+      "reason": "A running boolean plus an append-only attempt log; no phases and no transitions.",
+      "scan": ["src/sidecar/main.ts:NpuTestState.status"]
+    },
+    {
+      "id": "agent-run",
+      "title": "Sub-agent run",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/shared/types.ts (`AgentRun.status`)",
+      "reason": "A linear run card status (running → done/error). The card only shows the end.",
+      "scan": ["src/shared/types.ts:AgentRun.status"]
+    },
+    {
+      "id": "review-run",
+      "title": "Code review run",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/shared/types.ts (`ReviewRun.status`)",
+      "reason": "A linear run card status (running → done).",
+      "scan": ["src/shared/types.ts:ReviewRun.status"]
+    },
+    {
+      "id": "loop-run",
+      "title": "Improve loop run",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/shared/types.ts (`LoopRun.status`)",
+      "reason": "A linear run card status (running → done).",
+      "scan": ["src/shared/types.ts:LoopRun.status"]
+    },
+    {
+      "id": "task-run",
+      "title": "Scheduled task result",
+      "owner": "core, sidecar",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/shared/types.ts (`TaskRun.status`); src/core/scheduler.ts",
+      "reason": "A terminal result (ok/error) plus a running boolean; the scheduler has no state to transition.",
+      "scan": ["src/shared/types.ts:TaskRun.status"]
+    },
+    {
+      "id": "work-log",
+      "title": "Work log line state",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/core/workLog.ts:9 (`WorkState`)",
+      "reason": "A per-line UI label (done/running/waiting/error) derived from the build and agent pipelines; it has no events of its own.",
+      "scan": ["src/core/workLog.ts:WorkState"]
+    },
+    {
+      "id": "manifest-evidence",
+      "title": "Evidence freshness for a model artifact",
+      "owner": "core",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/core/manifest.ts:93 (`EvidenceState`)",
+      "reason": "A classification of evidence validity (present/stale/absent), computed from timestamps, not a lifecycle.",
+      "scan": ["src/core/manifest.ts:EvidenceState"]
+    },
+    {
+      "id": "settings-estimate",
+      "title": "Memory estimate phase",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/core/settingsUi.ts:425 (`EstimatePhase`); src/core/settingsUi.ts (`MemoryEstimateView.phase`)",
+      "reason": "UI feedback for one estimate request (idle/busy/ready and so on); no transitions to guard.",
+      "scan": ["src/core/settingsUi.ts:EstimatePhase", "src/core/settingsUi.ts:MemoryEstimateView.phase"]
+    },
+    {
+      "id": "settings-connection-test",
+      "title": "Provider connection test",
+      "owner": "core, renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/core/settingsUi.ts:680 (`ConnectionTestPhase`)",
+      "reason": "A button feedback state (idle/busy/ok/failed); no lifecycle.",
+      "scan": ["src/core/settingsUi.ts:ConnectionTestPhase"]
+    },
+    {
+      "id": "step-icon",
+      "title": "Step icon state",
+      "owner": "renderer",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/renderer/StepIcon.tsx:3 (`IconState`)",
+      "reason": "Presentation state for one icon (running/done/waiting/error), fed by the build statuses.",
+      "scan": ["src/renderer/StepIcon.tsx:IconState"]
+    },
+    {
+      "id": "scenario-step",
+      "title": "Construct scenario step",
+      "owner": "core",
+      "userVisible": false,
+      "classification": "not-a-machine",
+      "where": "src/core/construct/scenarios.ts:12 (`ScenarioStep`)",
+      "reason": "The kind of one test-scenario action (click, key, wait); a value union, not a state flow.",
+      "scan": ["src/core/construct/scenarios.ts:ScenarioStep"]
+    },
+    {
+      "id": "template-kit",
+      "title": "Template kit language phase and status",
+      "owner": "core",
+      "userVisible": false,
+      "classification": "not-a-machine",
+      "where": "src/core/templates/kit.ts (`Lang.phase`, `Lang.status`)",
+      "reason": "Per-language progress labels inside a template build step; no transitions.",
+      "scan": ["src/core/templates/kit.ts:Lang.phase", "src/core/templates/kit.ts:Lang.status"]
+    },
+    {
+      "id": "renderer-local-aliases",
+      "title": "Renderer local status aliases",
+      "owner": "renderer",
+      "userVisible": false,
+      "classification": "not-a-machine",
+      "where": "src/renderer/EngineCompare.tsx:6; src/renderer/NpuLoadTest.tsx:8",
+      "reason": "Local type aliases that only rename a host state shape (`Awaited<ReturnType<...>>`); they add no lifecycle.",
+      "scan": ["src/renderer/EngineCompare.tsx:Status", "src/renderer/NpuLoadTest.tsx:State"]
+    },
+    {
+      "id": "npuOwner",
+      "title": "NPU owner",
+      "owner": "sidecar",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/npuOwner.ts (NpuOwner.claim is the one way an engine takes the NPU); src/sidecar/main.ts (both engines' starts and the window's releaseFoundry)",
+      "reason": "Registered machine `npuOwner` (free, geniex, foundry; a jump from one engine to the other is forbidden). It was implicit, spread over two unconditional releases added after two crashes; tests/one-engine-guard.test.ts fails on a start that does not claim.",
+      "scan": []
+    },
+    {
+      "id": "modelVerdict",
+      "title": "Model verdict on this PC",
+      "owner": "sidecar, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src/core/loadFailures.ts (verdictOf, checkOutcome); src/sidecar/main.ts (the unknown-model check ends with the machine's event); src/core/modelList.ts (listedHere)",
+      "reason": "Registered machine `modelVerdict` (unknown, checking, loads, fails), read from the placements and loadFailures records. It was implicit in two records written in separate places; a check GenieX never tried is now the event not_tried and records nothing.",
+      "scan": []
+    },
+    {
+      "id": "agentGrant",
+      "title": "Computer Use window grant",
+      "owner": "Rust host, renderer",
+      "userVisible": true,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src-tauri/src/agent_driver.rs (the grant slot); src/renderer/computerUse.tsx (releases a grant whose run failed to start)",
+      "reason": "Registered machine `agentGrant` (free, held) for the docs and the legal moves; the host's grant slot is still an Option, and a generated Rust enum is owed once the host builds again.",
+      "scan": []
+    },
+    {
+      "id": "geniexProbe",
+      "title": "GenieX options probe",
+      "owner": "Rust host",
+      "userVisible": false,
+      "classification": "migrated",
+      "where": "src/shared/stateMachines.json; src-tauri/src/capabilities.rs (help_is_complete decides complete or partial; only a complete answer is kept)",
+      "reason": "Registered machine `geniexProbe` (not_probed, complete, partial) for the docs and the legal moves; the host keeps only a complete answer. A generated Rust enum is owed once the host builds again.",
+      "scan": []
+    },
+    {
+      "id": "model-switch",
+      "title": "Model switch in Settings (Starting, Warming up, Cancel)",
+      "owner": "renderer",
+      "userVisible": true,
+      "classification": "not-migrated",
+      "where": "src/renderer/modelSwitch.ts (`SwitchPhase`, `ModelSwitcher`)",
+      "reason": "One switch's view: idle, starting, warming, then done (idle), failed or cancelled. It mirrors the registered `server` machine (starting, loading, ready) read from the host and adds only the person's Cancel; registering it would duplicate the server's transitions.",
+      "scan": ["src/renderer/modelSwitch.ts:SwitchPhase"]
+    },
+    {
+      "id": "geniexGate",
+      "title": "GenieX minimum-version verdict",
+      "owner": "sidecar",
+      "userVisible": true,
+      "classification": "not-a-machine",
+      "where": "src/core/geniexGate.ts:14 (`GeniexGateState`)",
+      "reason": "A one-shot classification of the installed geniex.exe and its `--version` output (ok, missing, outdated, invalid), recomputed whenever the executable's identity changes. It is a verdict, not a stored phase: nothing moves from one value to another by an event.",
+      "scan": ["src/core/geniexGate.ts:GeniexGateState"]
+    }
+  ]
+}

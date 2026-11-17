@@ -1,0 +1,231 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Program</title>
+<style>
+html, body { min-height: 100vh; }
+body { margin: 0; font-family: system-ui, "Segoe UI", sans-serif; }
+body {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        background: #1e1b4b;
+    }
+    #gameContainer {
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    #gameCanvas {
+        border: 1px solid #312e81;
+    }
+    #scoreBox {
+        color: white;
+        font-family: Arial, sans-serif;
+        font-size: 16px;
+    }
+</style></head>
+<body>
+<div id="gameContainer" style="width: 400px; height: 400px; background: #1e1b4b; position: relative;">
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <div id="scoreBox" style="position: absolute; top: 10px; left: 10px; background: #312e81; padding: 10px; border-radius: 12px;"></div>
+</div>
+<div id="none" style="width:800px;height:450px"></div>
+<!-- x-construct {"title":"Program","language":"English","requirements":[{"id":"R1","text":"A web page that displays a snake game."},{"id":"R2","text":"The snake should be represented by a series of segments that move across the screen."},{"id":"R3","text":"The player should be able to control the snake's direction using keyboard inputs."},{"id":"R4","text":"The game should include a food item that the snake can eat to grow in length."},{"id":"R5","text":"The game should keep track of the player's score based on the number of food items eaten."},{"id":"R6","text":"The game should end when the snake collides with the walls or itself."},{"id":"R7","text":"The game should restart automatically after it ends."}],"units":[{"id":"u0s","kind":"state","name":"S","does":"everything the program remembers, with its starting values","serves":["R1","R2","R3","R4","R5","R6","R7"],"uses":[],"examples":[]},{"id":"u0l","kind":"layout","name":"layout","does":"the page: the elements and the look","serves":["R1","R2","R3","R4","R5","R6","R7"],"uses":[],"examples":[]},{"id":"u3","kind":"fn","name":"moveSnake","does":"moves each segment of the snake by its speed in the specified direction for dt","serves":["R1"],"uses":[],"signature":"moveSnake(snake, direction, dt)","examples":[{"call":"moveSnake([{x:0,y:0,w:10,h:10}], \"right\", 1)","expect":"[{x:10,y:0,w:10,h:10}]"}],"shared":true},{"id":"u4","kind":"fn","name":"checkCollision","does":"true when the snake collides with the food or walls","serves":["R6"],"uses":[],"signature":"checkCollision(snake, food, walls)","examples":[{"call":"checkCollision([{x:0,y:0,w:10,h:10}], {x:10,y:10,w:10,h:10}, [{x:0,y:0,w:400,h:400}])","expect":"true"}],"shared":true},{"id":"u7","kind":"fn","name":"updateScore","does":"updates the score based on the number of food items eaten","serves":["R5"],"uses":[],"signature":"updateScore(score, foodEaten)","examples":[{"call":"updateScore(0, 1)","expect":"1"}],"shared":true},{"id":"u8","kind":"fn","name":"restartGame","does":"resets the game state after it ends","serves":["R7"],"uses":[],"signature":"restartGame(snake, food, score)","examples":[{"call":"restartGame([{x:0,y:0,w:10,h:10}], {x:10,y:10,w:10,h:10}, 0)","expect":"{mode: \"playing\", snake: [{x:0,y:0,w:10,h:10}], direction: \"right\", food: {x:10,y:10,w:10,h:10}, score: 0}"}],"shared":true},{"id":"u9","kind":"view","name":"drawScore","does":"shows the player's score","serves":["R5"],"uses":[],"examples":[],"into":"scoreBox","reads":["score"],"writes":[]},{"id":"u10","kind":"view","name":"handleControls","does":"listens for keyboard inputs to change the snake's direction","serves":["R3"],"uses":[],"examples":[],"into":"none","reads":[],"writes":[]},{"id":"u11","kind":"handler","name":"onArrowLeftDown","does":"sets direction to \"left\"","serves":["R3"],"uses":[],"examples":[],"on":"keydown ArrowLeft","reads":[],"writes":["direction"]},{"id":"u12","kind":"handler","name":"onArrowRightDown","does":"sets direction to \"right\"","serves":["R3"],"uses":[],"examples":[],"on":"keydown ArrowRight","reads":[],"writes":["direction"]},{"id":"u13","kind":"handler","name":"onArrowUpDown","does":"sets direction to \"up\"","serves":["R3"],"uses":[],"examples":[],"on":"keydown ArrowUp","reads":[],"writes":["direction"]},{"id":"u14","kind":"handler","name":"onArrowDownDown","does":"sets direction to \"down\"","serves":["R3"],"uses":[],"examples":[],"on":"keydown ArrowDown","reads":[],"writes":["direction"]},{"id":"u15","kind":"handler","name":"onTick","does":"moves snake, checks collision, updates score, restarts if needed","serves":["R2","R4","R5","R6","R7"],"uses":["moveSnake","checkCollision","updateScore","restartGame"],"examples":[],"on":"tick 16","reads":["snake","direction","food","score","canvasWidth","canvasHeight"],"writes":["snake","score"]},{"id":"u16","kind":"handler","name":"onLoad","does":"initializes game state","serves":["R1"],"uses":["restartGame"],"examples":[],"on":"load","reads":[],"writes":["snake","direction","food","score"]}]} -->
+<script>
+"use strict";
+var S = {
+ "mode": "playing",
+ "snake": [
+  {
+   "x": 100,
+   "y": 100,
+   "w": 20,
+   "h": 20
+  },
+  {
+   "x": 80,
+   "y": 100,
+   "w": 20,
+   "h": 20
+  },
+  {
+   "x": 60,
+   "y": 100,
+   "w": 20,
+   "h": 20
+  }
+ ],
+ "direction": "right",
+ "food": {
+  "x": 200,
+  "y": 200,
+  "w": 20,
+  "h": 20
+ },
+ "score": 0,
+ "canvasWidth": 400,
+ "canvasHeight": 400
+};
+
+/* unit:moveSnake */
+function moveSnake(snake, direction, dt) {
+  const newSnake = [...snake];
+  const head = { ...newSnake[0] };
+
+  switch (direction) {
+    case "right":
+      head.x += head.w * dt;
+      break;
+    case "left":
+      head.x -= head.w * dt;
+      break;
+    case "up":
+      head.y -= head.h * dt;
+      break;
+    case "down":
+      head.y += head.h * dt;
+      break;
+  }
+
+  newSnake.unshift(head);
+  newSnake.pop();
+
+  return newSnake;
+}
+/* end:moveSnake */
+/* unit:checkCollision */
+function checkCollision(snake, food, walls) {
+  const head = snake[0];
+  const headRect = { x: head.x, y: head.y, w: head.w, h: head.h };
+
+  // Check collision with walls
+  for (const wall of walls) {
+    if (headRect.x < wall.x + wall.w &&
+        headRect.x + headRect.w > wall.x &&
+        headRect.y < wall.y + wall.h &&
+        headRect.y + headRect.h > wall.y) {
+      return true;
+    }
+  }
+
+  // Check collision with itself
+  for (let i = 1; i < snake.length; i++) {
+    const segment = snake[i];
+    if (headRect.x < segment.x + segment.w &&
+        headRect.x + headRect.w > segment.x &&
+        headRect.y < segment.y + segment.h &&
+        headRect.y + headRect.h > segment.y) {
+      return true;
+    }
+  }
+
+  // Check collision with food
+  if (headRect.x < food.x + food.w &&
+      headRect.x + headRect.w > food.x &&
+      headRect.y < food.y + food.h &&
+      headRect.y + headRect.h > food.y) {
+    return true;
+  }
+
+  return false;
+}
+/* end:checkCollision */
+/* unit:updateScore */
+function updateScore(score, foodEaten) {
+  return score + foodEaten;
+}
+/* end:updateScore */
+/* unit:restartGame */
+function restartGame(snake, food, score) {
+  return {
+    mode: "playing",
+    snake: [...snake],
+    direction: "right",
+    food: { ...food },
+    score: 0
+  };
+}
+/* end:restartGame */
+/* unit:drawScore */
+function drawScore() {
+    document.getElementById('scoreBox').textContent = 'Score: ' + S.score;
+}
+/* end:drawScore */
+/* unit:handleControls */
+function handleControls() {
+    
+}
+/* end:handleControls */
+/* unit:onArrowLeftDown */
+function onArrowLeftDown(e) {
+  S.direction = "left";
+}
+/* end:onArrowLeftDown */
+/* unit:onArrowRightDown */
+function onArrowRightDown(e) {
+  S.direction = "right";
+}
+/* end:onArrowRightDown */
+/* unit:onArrowUpDown */
+function onArrowUpDown(e) {
+  if (e.key === "ArrowUp" && S.direction !== "down") {
+    S.direction = "up";
+  }
+}
+/* end:onArrowUpDown */
+/* unit:onArrowDownDown */
+function onArrowDownDown(e) {
+  if (S.direction !== "up") {
+    S.direction = "down";
+  }
+}
+/* end:onArrowDownDown */
+/* unit:onTick */
+function onTick() {
+  if (S.mode === "playing") {
+    S.snake = moveSnake(S.snake, S.direction, 0.016);
+    if (checkCollision(S.snake, S.food, [])) {
+      S.score = updateScore(S.score, 1);
+      S.food = { x: Math.random() * (S.canvasWidth - 20), y: Math.random() * (S.canvasHeight - 20), w: 20, h: 20 };
+    }
+    if (checkCollision(S.snake, [], [])) {
+      S.mode = "gameOver";
+    }
+  } else if (S.mode === "gameOver") {
+    Object.assign(S, restartGame(S.snake, S.food, S.score));
+  }
+}
+/* end:onTick */
+/* unit:onLoad */
+function onLoad() {
+  S.snake = [{ x: 200, y: 200, w: 20, h: 20 }];
+  S.direction = "right";
+  S.food = { x: 100, y: 100, w: 20, h: 20 };
+  S.score = 0;
+}
+/* end:onLoad */
+function __run(f, e) { try { return f(e); } catch (err) { console.error(err); } }
+/* A picture of the program: an SVG kept in the state (S.art), its colours taken from the palette, drawn when it has loaded (a plain shape stands in until then) */
+var __pics = {};
+function sprite(svg, palette) {
+  if (!svg) return null;
+  var src = String(svg).replace(/var(--([w-]+),s*([^)]+))/g, function (m, k, d) { return palette && palette[k] ? palette[k] : d; });
+  var im = __pics[src];
+  if (!im) { im = new Image(); im.onload = function () { __last = ""; __go(); }; im.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(src); __pics[src] = im; }
+  return im.complete && im.naturalWidth ? im : null;
+}
+function render() { Array.prototype.forEach.call(document.querySelectorAll("canvas"), function (c) { var x = c.getContext("2d"); if (x) x.clearRect(0, 0, c.width, c.height); }); try { drawScore(S); } catch (err) { console.error(err); } try { handleControls(S); } catch (err) { console.error(err); } }
+var __last = "", __queued = false, __at = 0;
+function __paint(t) { __queued = false; if (t - __at < 30) { __go(); return; } __at = t; var s; try { s = JSON.stringify(S); } catch (err) { s = "" + Math.random(); } if (s === __last) return; __last = s; render(); }
+function __go() { if (!__queued) { __queued = true; requestAnimationFrame(__paint); } }
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowLeft") { e.preventDefault(); __run(onArrowLeftDown, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowRight") { e.preventDefault(); __run(onArrowRightDown, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowUp") { e.preventDefault(); __run(onArrowUpDown, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowDown") { e.preventDefault(); __run(onArrowDownDown, e); __go(); } });
+setInterval(function () { __run(onTick); __go(); }, 16);
+__run(onLoad);
+render();
+try { __last = JSON.stringify(S); } catch (err) { __last = ""; }
+</script>
+<!-- /x-construct -->
+</body></html>

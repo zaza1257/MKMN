@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Calibration: a snake page that ignores the keys</title></head>
+<body>
+<canvas id="board" width="200" height="200"></canvas>
+<div id="score">0</div>
+<button id="restart">Restart</button>
+<script>
+"use strict";
+var S = { snake: [{ x: 10, y: 10 }], food: { x: 14, y: 10 }, dir: "right", score: 0, mode: "playing" };
+function onTick() {
+  if (S.mode !== "playing") { return; }
+  var h = S.snake[0];
+  var nx = h.x + (S.dir === "right" ? 1 : S.dir === "left" ? -1 : 0);
+  var ny = h.y + (S.dir === "down" ? 1 : S.dir === "up" ? -1 : 0);
+  if (nx < 0 || ny < 0 || nx >= 20 || ny >= 20) { S.mode = "gameOver"; return; }
+  for (var i = 1; i < S.snake.length; i++) { if (S.snake[i].x === nx && S.snake[i].y === ny) { S.mode = "gameOver"; return; } }
+  h.x = nx; h.y = ny;
+  if (nx === S.food.x && ny === S.food.y) { S.score = S.score + 1; S.snake.push({ x: nx, y: ny }); S.food = { x: 3, y: 3 }; }
+}
+function onTurn(e) {
+  // the model wrote key names the browser never sends, so the snake never turns
+  if (e.key === "Right") { S.dir = "right"; }
+  else if (e.key === "Left") { S.dir = "left"; }
+  else if (e.key === "Up") { S.dir = "up"; }
+  else if (e.key === "Down") { S.dir = "down"; }
+}
+function onRestartClick() {
+  S.snake = [{ x: 10, y: 10 }];
+  S.dir = "right";
+  S.score = 0;
+  S.mode = "playing";
+  S.food = { x: 14, y: 10 };
+}
+function render() {
+  var c = document.getElementById("board");
+  var x = c.getContext("2d");
+  x.clearRect(0, 0, c.width, c.height);
+  x.fillStyle = "#070";
+  for (var i = 0; i < S.snake.length; i++) { x.fillRect(S.snake[i].x * 10, S.snake[i].y * 10, 10, 10); }
+  x.fillStyle = "#f00";
+  x.fillRect(S.food.x * 10, S.food.y * 10, 10, 10);
+  document.getElementById("score").textContent = String(S.score);
+}
+function __run(f, e) { try { return f(e); } catch (err) { console.error(err); } }
+var __pics = {};
+function sprite(svg, palette) {
+  if (!svg) return null;
+  var src = String(svg).replace(/var\(--([\w-]+),\s*([^)]+)\)/g, function (m, k, d) { return palette && palette[k] ? palette[k] : d; });
+  var im = __pics[src];
+  if (!im) { im = new Image(); im.onload = function () { __go(); }; im.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(src); __pics[src] = im; }
+  return im.complete && im.naturalWidth ? im : null;
+}
+function __go() { try { render(); } catch (err) { console.error(err); } }
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowRight") { e.preventDefault(); __run(onTurn, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowLeft") { e.preventDefault(); __run(onTurn, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowUp") { e.preventDefault(); __run(onTurn, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowDown") { e.preventDefault(); __run(onTurn, e); __go(); } });
+Array.prototype.forEach.call(document.querySelectorAll('[id=' + JSON.stringify("restart") + ']'), function (el) { el.addEventListener("click", function (e) { __run(onRestartClick, e); __go(); }); });
+setInterval(function () { __run(onTick); __go(); }, 80);
+__go();
+</script>
+<!-- x-construct {"title":"Calibration: a snake page that ignores the keys","language":"English","requirements":[{"id":"R1","text":"the snake moves on its own"},{"id":"R2","text":"arrow keys turn the snake"},{"id":"R3","text":"eating grows the snake or raises the score"},{"id":"R4","text":"passing the edge ends the game"},{"id":"R5","text":"the game can be restarted"}],"units":[],"scenarios":[]} -->
+</body>
+</html>

@@ -1,0 +1,8 @@
+# The native ARM64 import libraries are resolved by src-tauri/build.rs, machine-independently:
+#   1. src-tauri/native-sdk/lib  (a junction or directory created by scripts/setup-arm64-libs.ps1)
+#   2. $MKMN_ARM64_LIBS\lib
+#   3. %USERPROFILE%\.arm64-libs\lib
+# No personal absolute path may appear in this file: it broke clean-machine builds.
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld"

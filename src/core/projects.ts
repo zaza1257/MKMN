@@ -1,0 +1,95 @@
+import type { Project } from "../shared/types";
+import { assembleInstructions, instructionBudgetFor, type Relevance } from "./prompts";
+import type { VisualRoute } from "./visualRoute";
+import { tokensOf } from "./context";
+
+export interface PromptParts {
+  custom?: string;
+  project?: Project | null;
+  /** A system prompt typed into the chat itself. */
+  extra?: string;
+  artifacts?: boolean;
+  /** The request is for a picture (chart, calculator, diagram): its rules replace the artifact rules. */
+  visual?: VisualRoute | null;
+  /** Characters of project knowledge allowed (context is the NPU's scarce resource). */
+  knowledgeChars: number;
+  /** The window the server actually serves: with it the instruction blocks are budgeted (docs/design/design-prompt-budget.md); without it the prompt is built whole, as the sessions that measure their own room expect. */
+  contextTokens?: number;
+  /** Tokens the conversation (history + question, not the system prompt) already takes, measured by the caller. */
+  conversationTokens?: number;
+  /** The closed file question's answer ("docx" | "xlsx" | "site" | "tool" | null); undefined = the router did not answer, and the rules for files stay (inclusion is the default). */
+  fileKind?: string | null;
+  /** The chat already holds a Word or Excel file the model wrote. */
+  chatHasOffice?: boolean;
+}
+
+/** Roughly 3.5 characters per token; knowledge may use at most a third of the context window. */
+export function knowledgeBudget(contextTokens: number): number {
+  return Math.max(2000, Math.floor((contextTokens / 3) * 3.5));
+}
+
+/** The lead line of the packed knowledge block, shared by the renderer's packing and the orchestrator's retrieval (which replaces the block's body under this lead). */
+export const KNOWLEDGE_LEAD = "Project knowledge (reference material the user added; use it when relevant):";
+
+export function knowledgeSize(p: Project): number {
+  return p.files.reduce((n, f) => n + f.content.length, 0);
+}
+
+/** Splits the budget fairly: small files stay whole, big ones are cut. Returns the text and what was left out. */
+export function packKnowledge(p: Project, budget: number): { text: string; truncated: string[] } {
+  const files = p.files.filter((f) => f.content.trim());
+  const truncated: string[] = [];
+  let left = budget;
+  const parts: string[] = [];
+  const order = [...files].sort((a, b) => a.content.length - b.content.length);
+  const share = new Map<string, number>();
+  order.forEach((f, i) => {
+    const fair = Math.floor(left / (order.length - i));
+    const take = Math.min(f.content.length, Math.max(fair, 0));
+    share.set(f.id, take);
+    left -= take;
+  });
+  for (const f of files) {
+    const take = share.get(f.id) ?? 0;
+    const cut = take < f.content.length;
+    if (cut) truncated.push(f.name);
+    parts.push(`<file name="${f.name.replace(/"/g, "'")}">\n${f.content.slice(0, take)}${cut ? "\n[…cut to fit the model's context]" : ""}\n</file>`);
+  }
+  return { text: parts.join("\n"), truncated };
+}
+
+/** The system message for a chat or a scheduled task. Empty string when there is nothing to say.
+ * With `contextTokens` the instruction blocks are budgeted: they drop whole, by priority, down to the minimal
+ * core, so the app's own text can never be what makes a request fail. The preamble (the notes the user wrote,
+ * the project, the extra prompt) is the person's own choice and is never dropped; it is measured into the budget. */
+export function buildSystemPrompt(o: PromptParts): string {
+  const out: string[] = [];
+  // a small model takes a first-person note for its own identity ("I'm Fabien, a software engineer" came back as its own answer): say whose it is
+  if (o.custom?.trim()) out.push(`Notes the user wrote about themselves and how they like answers. In these notes "I" and "my" are the USER, never you; you are the assistant. Use them quietly, and do not mention them unless they matter:\n"""\n${o.custom.trim()}\n"""`);
+  const p = o.project;
+  if (p) {
+    out.push(`You are working inside the project "${p.name}".${p.description.trim() ? ` ${p.description.trim()}` : ""}`);
+    if (p.instructions.trim()) out.push(`Project instructions:\n${p.instructions.trim()}`);
+    const k = packKnowledge(p, o.knowledgeChars);
+    if (k.text) out.push(`${KNOWLEDGE_LEAD}\n${k.text}`);
+  }
+  if (o.extra?.trim()) out.push(o.extra.trim());
+  // a request for a picture gets the rules of that picture and no artifact rules: the model has nothing to write a page for
+  const visual = o.visual ?? null;
+  // the file question's answer decides the deep specs: undefined = no answer (keep, inclusion is the default), null or a kind that is not an office file = a definite no
+  const office = o.chatHasOffice === true || o.fileKind === undefined || o.fileKind === "docx" || o.fileKind === "xlsx";
+  const drawn = office || o.fileKind === undefined || o.fileKind === "docx";
+  const relevance: Relevance = { artifacts: o.artifacts !== false && !visual, office, drawn, visual, web: false, images: false, agents: false };
+  if (o.contextTokens) {
+    // maxTokens is the chat's cap (4096): the reserve can only be over-estimated, never under
+    const budget = instructionBudgetFor(o.contextTokens, 4096, (o.conversationTokens ?? 0) + tokensOf(out.join("\n\n")));
+    const a = assembleInstructions(relevance, budget);
+    if (a.text) out.push(a.text);
+    if (a.dropped.length) console.log(`[prompt] window ${o.contextTokens}: instructions ${a.tokens} tokens (budget ${budget}); dropped: ${a.dropped.join(", ")}`);
+  } else {
+    // no window known: the caller measures its own room; the relevance rules still decide what may go in
+    const a = assembleInstructions(relevance, Number.MAX_SAFE_INTEGER);
+    if (a.text) out.push(a.text);
+  }
+  return out.join("\n\n");
+}

@@ -1,0 +1,46 @@
+{
+  "assistantName": "MKMN AI",
+  "note": "The one name the assistant says for itself. The lists below are forbidden AS A NAME FOR ITSELF, ITS MAKER OR ITS ORIGIN (a sentence where another product is the topic is never rewritten). Models and engines are replaced by the assistant name in a self-identifying sentence; makers are dropped with their clause.",
+  "models": [
+    "ChatGPT",
+    "Qwen",
+    "Llama",
+    "Gemma",
+    "Phi",
+    "Mistral",
+    "Ministral",
+    "Mixtral",
+    "DeepSeek",
+    "Claude",
+    "Gemini",
+    "GPT",
+    "LFM",
+    "Open NPU"
+  ],
+  "engines": [
+    "GenieX",
+    "Foundry Local",
+    "QAIRT",
+    "llama.cpp",
+    "Open NPU"
+  ],
+  "makers": [
+    "Alibaba",
+    "Meta",
+    "Google",
+    "Microsoft",
+    "Mistral AI",
+    "Liquid AI",
+    "OpenAI",
+    "Anthropic"
+  ],
+  "arabicMakers": [
+    "علي بابا",
+    "ميتا",
+    "جوجل",
+    "مايكروسوفت",
+    "ميسترال",
+    "أوبن إيه آي",
+    "أنثروبيك"
+  ]
+}

@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Failing snake page (pinned fixture)</title>
+<style>
+  #score { font: 28px/1.4 monospace; color: #0f0; background: #000; padding: 4px; }
+</style>
+</head>
+<body>
+<canvas id="board" width="300" height="300"></canvas>
+<div id="score">0</div>
+<script>
+"use strict";
+var S = { snake: [{ x: 5, y: 5 }], food: { x: 8, y: 5 }, dir: "down", score: 0, mode: "playing" };
+function onTick() {
+  var head = S.snake[0];
+  var nx = S.dir === "right" ? head.x + 1 : S.dir === "left" ? head.x - 1 : head.x;
+  var ny = S.dir === "down" ? head.y + 1 : S.dir === "up" ? head.y - 1 : head.y;
+  // BUG: eating the food does nothing — the score cannot move. This is the shape of the
+  // recorded failure (0/7): the page runs, its buttons run, nothing changes in S.
+  head.x = nx; head.y = ny;
+}
+function onTurn(e) {
+  if (e.key === "ArrowRight") S.dir = "right"; else if (e.key === "ArrowLeft") S.dir = "left";
+}
+function render() {
+  var c = document.getElementById("board");
+  var x = c.getContext("2d");
+  x.fillStyle = "#070";
+  x.clearRect(0, 0, c.width, c.height);
+  for (var i = 0; i < S.snake.length; i++) x.fillRect(S.snake[i].x * 10, S.snake[i].y * 10, 10, 10);
+  document.getElementById("score").textContent = String(S.score);
+}
+function __run(f, e) { try { return f(e); } catch (err) { console.error(err); } }
+/* unit:onTick */
+/* unit:onTurn */
+/* unit:render */
+/* A picture of the program: an SVG kept in the state (S.art), its colours taken from the palette, drawn when it has loaded (a plain shape stands in until then) */
+var __pics = {};
+function sprite(svg, palette) {
+  if (!svg) return null;
+  var src = String(svg).replace(/var\(--([\w-]+),\s*([^)]+)\)/g, function (m, k, d) { return palette && palette[k] ? palette[k] : d; });
+  var im = __pics[src];
+  if (!im) { im = new Image(); im.onload = function () { __last = ""; __go(); }; im.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(src); __pics[src] = im; }
+  return im.complete && im.naturalWidth ? im : null;
+}
+var __last = "", __queued = false, __at = 0;
+function __go() {
+  if (__queued) return;
+  var draw = function () { __queued = false; __last = ""; try { render(); } catch (err) { console.error(err); } };
+  if (typeof requestAnimationFrame === "function" && typeof performance !== "undefined" && performance.now) {
+    __queued = true; __at = performance.now(); requestAnimationFrame(function () { if (performance.now() - __at >= 16) draw(); else { __queued = false; __go(); } });
+  } else { draw(); }
+}
+(function () { var c = document.getElementById("board"); if (c) { c.width = c.clientWidth || c.width; c.height = c.clientHeight || c.height; } })();
+
+Array.prototype.forEach.call(document.querySelectorAll('[id= ' + JSON.stringify("board") + ']'), function (el) { el.addEventListener("click", function (e) { __run(onTurn, e); __go(); }); });
+Array.prototype.forEach.call(document.querySelectorAll('[id= ' + JSON.stringify("score") + ']'), function (el) { el.addEventListener("click", function (e) { __run(onTurn, e); __go(); }); });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowRight") { e.preventDefault(); __run(onTurn, e); __go(); } });
+document.addEventListener("keydown", function (e) { if (e.key === "ArrowLeft") { e.preventDefault(); __run(onTurn, e); __go(); } });
+setInterval(function () { __run(onTick); __go(); }, 80);
+__go();
+</script>
+<!-- x-construct {"title":"Failing snake page","language":"English","requirements":[{"id":"R1","text":"the snake moves on its own"},{"id":"R2","text":"arrow keys turn the snake"},{"id":"R3","text":"the score goes up when the snake eats"}],"units":[],"scenarios":[{"req":"R2","steps":[{"do":"press","key":"ArrowRight","times":3}],"expect":{"kind":"up","id":"score"},"text":"press ArrowRight 3 times → #score text goes up"}]} -->
+</body>
+</html>

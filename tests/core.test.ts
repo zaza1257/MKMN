@@ -1,0 +1,481 @@
+import { describe, expect, it } from "vitest";
+import { fitContext, kvBytesPerToken, maxContextTokens, estimateTokPerSec, npuNeededGB } from "../src/core/memory";
+import { parseGgufMetadata, summarize, NeedMoreData, readGgufHeader } from "../src/core/gguf";
+import { groupModels, pickQuant, quantFromName } from "../src/core/quant";
+import { buildProfile, chipFamily, hardwareProblems, parseRawHardware } from "../src/core/hardware";
+import { scoreModel, scoreEntry } from "../src/core/fit";
+import { CATALOG, viewCatalog } from "../src/core/catalog";
+import { samplingFor, requestSampling, withLoopGuard, samplingFromGenerationConfig, SAFE_SAMPLING } from "../src/core/sampling";
+import { friendly, translateError } from "../src/core/errors";
+import { sanitizeMessages } from "../src/core/chat";
+import { classifyArchitecture } from "../src/core/arch";
+import { parseRepoInput } from "../src/core/hf";
+import { buildGguf } from "./gguf-builder";
+
+const hw16 = buildProfile(
+  { cpuName: "Snapdragon(R) X Plus - X1P64100 - Qualcomm(R) Oryon(TM) CPU", totalRamBytes: 16 * 1024 ** 3, npuDevices: [{ name: "Snapdragon(R) X Plus - X1P64100 - Qualcomm(R) Hexagon(TM) NPU", driverVersion: "30.0.220.3000" }], npuSharedBytes: 7.8 * 1024 ** 3, osArch: "ARM64" },
+  "arm64"
+);
+
+describe("memory math", () => {
+  it("matches the KV sizes in the spec", () => {
+    expect(kvBytesPerToken({ attentionLayers: 40, kvHeads: 8, headDim: 64 }) / 1024).toBeCloseTo(80, 0);
+    expect(kvBytesPerToken({ attentionLayers: 36, kvHeads: 8, headDim: 128 }) / 1024).toBeCloseTo(144, 0);
+    expect(kvBytesPerToken({ attentionLayers: 32, kvHeads: 4, headDim: 128 }) / 1024).toBeCloseTo(64, 0);
+    expect(kvBytesPerToken({ attentionLayers: 40, kvHeads: 8, headDim: 128 }) / 1024).toBeCloseTo(160, 0);
+  });
+  it("lands in the measured context ranges on 7.8 GB", () => {
+    const qwen = maxContextTokens(2.3, { attentionLayers: 36, kvHeads: 8, headDim: 128 }, 7.8);
+    expect(qwen).toBeGreaterThanOrEqual(16 * 1024);
+    expect(qwen).toBeLessThan(32 * 1024); // 64K crashed
+    const granite8 = maxContextTokens(4.6, { attentionLayers: 40, kvHeads: 8, headDim: 128 }, 7.8);
+    expect(granite8).toBeGreaterThanOrEqual(4096);
+    expect(granite8).toBeLessThanOrEqual(16 * 1024);
+  });
+  it("shrinks a context wish and refuses when weights do not fit", () => {
+    const kv = { attentionLayers: 36, kvHeads: 8, headDim: 128 };
+    expect(fitContext({ fileGB: 2.3, kv, npuBudgetGB: 7.8, wanted: 65536 })).toBeLessThan(65536);
+    expect(fitContext({ fileGB: 2.3, kv, npuBudgetGB: 7.8, wanted: 8192 })).toBe(8192);
+    expect(fitContext({ fileGB: 7.5, kv, npuBudgetGB: 7.8, wanted: 8192 })).toBe(0);
+    expect(fitContext({ fileGB: 2.3, kv, npuBudgetGB: 7.8, wanted: 65536, maxTested: 24576 })).toBe(24576);
+  });
+  it("estimates speed near measured runs", () => {
+    expect(estimateTokPerSec(5.4, false)).toBeGreaterThan(7);
+    expect(estimateTokPerSec(5.4, false)).toBeLessThan(9);
+    expect(estimateTokPerSec(2.3, false)).toBeGreaterThan(13);
+    expect(estimateTokPerSec(2.3, false)).toBeLessThan(15);
+    expect(npuNeededGB(4.7, undefined, 4096)).toBeCloseTo(5.6, 1);
+  });
+});
+
+describe("GGUF header", () => {
+  const buf = buildGguf({ arch: "qwen3", blocks: 36, heads: 32, kvHeads: 8, embed: 2560, keyLength: 128, ctx: 262144, name: "Qwen3 4B" });
+  it("parses metadata and computes KV shape", () => {
+    const info = summarize(parseGgufMetadata(buf), 2.3);
+    expect(info.architecture).toBe("qwen3");
+    expect(info.attentionLayers).toBe(36);
+    expect(info.kvHeads).toBe(8);
+    expect(info.headDim).toBe(128);
+    expect(info.contextLength).toBe(262144);
+  });
+  it("counts only attention layers for per-layer kv arrays (hybrid)", () => {
+    const hybrid = buildGguf({ arch: "lfm2moe", blocks: 24, heads: 32, kvHeadsArray: [0, 0, 8, 0, 0, 8, 0, 0, 8, 0, 0, 8, 0, 0, 8, 0, 0, 8, 0, 0, 0, 0, 0, 0], embed: 2048, expertCount: 32 });
+    const info = summarize(parseGgufMetadata(hybrid));
+    expect(info.attentionLayers).toBe(6);
+    expect(info.kvHeads).toBe(8);
+    expect(info.expertCount).toBe(32);
+  });
+  it("asks for more data when truncated, and readGgufHeader retries", async () => {
+    expect(() => parseGgufMetadata(buf.subarray(0, 100))).toThrow(NeedMoreData);
+    const big = buildGguf({ arch: "llama", blocks: 8, heads: 8, kvHeads: 8, embed: 512, padTokens: 200000 });
+    expect(big.length).toBeGreaterThan(512 * 1024);
+    let calls = 0;
+    const meta = await readGgufHeader(async (s, e) => { calls++; return big.subarray(s, e + 1); });
+    expect(calls).toBeGreaterThan(1);
+    expect(summarize(meta).architecture).toBe("llama");
+  });
+  it("rejects non-GGUF", () => {
+    expect(() => parseGgufMetadata(Buffer.from("not a gguf file at all"))).toThrow(/not a GGUF/);
+  });
+});
+
+describe("quant selection", () => {
+  const f = (path: string, gb: number) => ({ path, sizeBytes: gb * 1024 ** 3 });
+  it("names quants", () => {
+    expect(quantFromName("Qwen3-4B-Thinking-2507-Q4_0.gguf")?.kind).toBe("q4_0");
+    expect(quantFromName("model-Q4_K_M.gguf")?.kind).toBe("kquant");
+    expect(quantFromName("gpt-oss-20b-MXFP4.gguf")?.kind).toBe("mxfp4");
+    expect(quantFromName("x-IQ4_XS.gguf")?.kind).toBe("iquant");
+  });
+  it("prefers Q4_0, then Q8_0 for small, then MXFP4 for MoE, K-quants last with a warning", () => {
+    const g = groupModels([f("a-Q4_K_M.gguf", 2.5), f("a-Q8_0.gguf", 4), f("a-Q4_0.gguf", 2.3), f("mmproj-F16.gguf", 1)]);
+    expect(pickQuant(g, { paramsB: 4, isMoe: false })?.quant).toBe("Q4_0");
+    const noQ4 = groupModels([f("a-Q4_K_M.gguf", 2.5), f("a-Q8_0.gguf", 1.8)]);
+    expect(pickQuant(noQ4, { paramsB: 1.5, isMoe: false })?.quant).toBe("Q8_0");
+    expect(pickQuant(noQ4, { paramsB: 8, isMoe: false })?.quant).toBe("Q4_K_M");
+    expect(pickQuant(noQ4, { paramsB: 8, isMoe: false })?.note).toMatch(/CPU/);
+    const moe = groupModels([f("m-MXFP4.gguf", 12), f("m-Q4_K_M.gguf", 14)]);
+    expect(pickQuant(moe, { paramsB: 20, isMoe: true })?.quant).toBe("MXFP4");
+    expect(pickQuant([], { paramsB: 1, isMoe: false })).toBeNull();
+  });
+  it("sums split shards", () => {
+    const g = groupModels([f("m-Q4_0-00001-of-00002.gguf", 5), f("m-Q4_0-00002-of-00002.gguf", 4)]);
+    expect(g).toHaveLength(1);
+    expect(g[0].path).toMatch(/00001/);
+    expect(g[0].sizeBytes).toBe(9 * 1024 ** 3);
+  });
+  it("does not count a quant twice when a repo holds it as one file and as shards", () => {
+    const g = groupModels([f("q-q4_0-00001-of-00002.gguf", 4), f("q-q4_0-00002-of-00002.gguf", 0.5), f("q-q4_0.gguf", 4.5)]);
+    expect(g).toHaveLength(1);
+    expect(g[0].path).toBe("q-q4_0.gguf");
+    expect(g[0].parts).toEqual(["q-q4_0.gguf"]);
+    expect(g[0].sizeBytes).toBe(4.5 * 1024 ** 3);
+  });
+});
+
+describe("hardware profile", () => {
+  it("reads the 16 GB X1 test machine", () => {
+    expect(hw16.chipFamily).toBe("x1");
+    expect(hw16.ramGB).toBe(16);
+    expect(hw16.npuBudgetGB).toBe(7.8);
+    expect(hw16.npuBudgetSource).toBe("measured");
+    expect(hw16.npuDriverVersion).toBe("30.0.220.3000");
+    expect(hardwareProblems(hw16)).toEqual([]);
+  });
+  it("estimates about half of RAM when the limit is unknown, and says so", () => {
+    const hw = buildProfile({ cpuName: "Snapdragon X Elite", totalRamBytes: 16 * 1024 ** 3, npuDevices: [{ name: "NPU" }], osArch: "ARM64" }, "arm64");
+    expect(hw.npuBudgetGB).toBeCloseTo(7.8, 1);
+    expect(hw.npuBudgetSource).toBe("estimated");
+    expect(buildProfile({ cpuName: "Snapdragon X Elite", totalRamBytes: 32 * 1024 ** 3 }, "arm64", 15).npuBudgetSource).toBe("user");
+  });
+  it("flags an emulated x64 build on an ARM64 machine", () => {
+    const hw = buildProfile({ cpuName: "Snapdragon X Plus", totalRamBytes: 16 * 1024 ** 3, npuDevices: [{ name: "NPU" }], osArch: "ARM64" }, "x64");
+    expect(hw.emulated).toBe(true);
+    expect(hardwareProblems(hw)[0]).toMatch(/ARM64/);
+    expect(scoreModel({ architecture: "qwen3", fileGB: 2.3, kind: "q4_0", wantedContext: 8192, engine: "llama_cpp" }, hw).level).toBe("red");
+  });
+  it("parses the probe JSON, including a single-object device list", () => {
+    const raw = parseRawHardware('noise {"cpuName":"X","totalRamBytes":17179869184,"npuDevices":{"name":"NPU","driverVersion":"1.2"},"osArch":"ARM64"}');
+    expect(raw.npuDevices).toHaveLength(1);
+    expect(chipFamily("Snapdragon(R) X2 Elite")).toBe("x2");
+    expect(chipFamily("Intel Core Ultra 7")).toBe("unknown");
+  });
+});
+
+describe("fit verdicts", () => {
+  const base = { architecture: "qwen3", fileGB: 2.3, kind: "q4_0" as const, wantedContext: 16384, engine: "llama_cpp" as const, kv: { attentionLayers: 36, kvHeads: 8, headDim: 128 } };
+  it("green for standard arch + Q4_0 that fits", () => {
+    const v = scoreModel(base, hw16);
+    expect(v.level).toBe("green");
+    expect(v.contextTokens).toBe(16384);
+    expect(v.installAllowed).toBe(true);
+  });
+  it("amber for hybrids and K-quants, red for unknown arch and for oversize", () => {
+    expect(scoreModel({ ...base, architecture: "qwen35" }, hw16).level).toBe("amber");
+    expect(scoreModel({ ...base, kind: "kquant" }, hw16).level).toBe("amber");
+    expect(scoreModel({ ...base, architecture: "zaya" }, hw16).level).toBe("red");
+    const big = scoreModel({ ...base, fileGB: 12 }, hw16);
+    expect(big.level).toBe("red");
+    expect(big.installAllowed).toBe(true);
+  });
+  it("shrinks context and explains", () => {
+    const v = scoreModel({ ...base, wantedContext: 65536 }, hw16);
+    expect(v.contextTokens).toBeLessThan(65536);
+    expect(v.reasons.join(" ")).toMatch(/shrunk/);
+  });
+  it("native bundles above 1.7B are red on the old driver; small ones are fine", () => {
+    expect(scoreModel({ architecture: "qwen3", fileGB: 4, kind: "native", paramsB: 4, wantedContext: 4096, engine: "qairt" }, hw16).level).toBe("red");
+    expect(scoreModel({ architecture: "qwen3", fileGB: 1.7, kind: "native", paramsB: 1.7, wantedContext: 4096, engine: "qairt" }, hw16).level).toBe("green");
+  });
+  it("scores more RAM into a bigger catalog", () => {
+    const hw32 = buildProfile({ cpuName: "Snapdragon X Elite", totalRamBytes: 32 * 1024 ** 3, npuDevices: [{ name: "NPU" }], npuSharedBytes: 16 * 1024 ** 3, osArch: "ARM64" }, "arm64");
+    const v16 = scoreModel({ ...base, fileGB: 14, architecture: "gpt-oss", kind: "mxfp4", isMoe: true }, hw16);
+    const v32 = scoreModel({ ...base, fileGB: 11, architecture: "gpt-oss", kind: "mxfp4", isMoe: true }, hw32);
+    expect(v16.level).toBe("red");
+    expect(v32.level).not.toBe("red");
+  });
+});
+
+describe("catalog", () => {
+  it("ships the tested models with the right verdicts on the 16 GB machine", () => {
+    const view = viewCatalog(hw16);
+    const byId = Object.fromEntries(view.map((v) => [v.entry.id, v]));
+    expect(byId["qwen3-4b-thinking-2507"].verdict.level).toBe("green");
+    expect(byId["qwen3-4b-thinking-2507"].entry.default).toBe(true);
+    expect(byId["lfm2.5-8b-a1b"].verdict.level).toBe("green");
+    expect(byId["qwen3.5-4b"].verdict.level).toBe("amber");
+    expect(byId["qwen3-1.7b-native"].verdict.level).toBe("green");
+    expect(byId["granite-4.2-3b"].hidden).toBe(true);
+    expect(view[view.length - 1].entry.excluded).toBe(true);
+  });
+  it("every entry carries explicit sampling", () => {
+    for (const e of CATALOG) {
+      expect(e.sampling.temperature).toBeGreaterThan(0);
+      expect(e.sampling.max_tokens).toBeGreaterThan(1000);
+      expect(scoreEntry(e, hw16).reasons.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("sampling", () => {
+  it("gives a repeat penalty to small models that have none, stronger as they shrink", () => {
+    const base = { temperature: 0.7, top_p: 0.8, max_tokens: 4096 };
+    expect(withLoopGuard(base, 0.5).repetition_penalty).toBe(1.15);
+    expect(withLoopGuard(base, 3).repetition_penalty).toBe(1.08);
+    expect(withLoopGuard({ ...base, presence_penalty: 1.5 }, 0.5).repetition_penalty).toBeUndefined();
+  });
+  it("applies the spec table", () => {
+    expect(samplingFor("unsloth/Qwen3-4B-Thinking-2507-GGUF").sampling).toMatchObject({ temperature: 0.6, top_p: 0.95, top_k: 20, presence_penalty: 1.5, max_tokens: 8192 });
+    expect(samplingFor("bartowski/granite-4.2-3b-GGUF").sampling.temperature).toBe(1.0);
+    expect(samplingFor("nvidia/Nemotron-Cascade-8B").sampling.max_tokens).toBe(6144);
+    expect(samplingFor("Nanbeige4.1-3B").sampling.max_tokens).toBe(16384);
+    expect(samplingFor("Ministral-3-8B-Reasoning").sampling).toMatchObject({ temperature: 0.7, max_tokens: 6144 });
+  });
+  it("falls back to the safe set and sends it explicitly", () => {
+    const s = samplingFor("someone/unknown-model");
+    expect(s.family).toBeNull();
+    expect(requestSampling(s.sampling)).toEqual({ temperature: 0.6, top_p: 0.95, max_tokens: 8192, presence_penalty: 1.5 });
+  });
+  it("passes min_p through only when a model's own config names one", () => {
+    expect(requestSampling({ ...SAFE_SAMPLING, min_p: 0.05 })).toMatchObject({ min_p: 0.05 });
+    expect(requestSampling(SAFE_SAMPLING)).not.toHaveProperty("min_p");
+    const fromCfg = samplingFromGenerationConfig({ temperature: 0.2, min_p: 0.1, top_p: 0.9 }, SAFE_SAMPLING);
+    expect(fromCfg.min_p).toBe(0.1);
+    expect(fromCfg.temperature).toBe(0.2);
+    expect(samplingFromGenerationConfig({}, SAFE_SAMPLING).min_p).toBeUndefined();
+  });
+});
+
+describe("errors", () => {
+  it("translates every error from the spec table", () => {
+    const cases: [string, string][] = [
+      ["Could not create context from binary ... context index = 3 : err 5000", "model-load"],
+      ["Could not create context from binary for context index = 0 : err 1002", "model-load"],
+      ["SDKError(Model loading failed)", "model-load"],
+      ["ggml-hex: dspqueue_read failed", "npu-overflow"],
+      ["net::ERR_CONNECTION_RESET", "connection-reset"],
+      ['requested quant "Q4_0" not found', "quant-missing"],
+      ["Requested chipset not available for this model", "no-chipset"],
+      ["OSError: [WinError 193] %1 is not a valid Win32 application", "win193"],
+      ["SDKError(Unknown error)", "npu-sdk-error"],
+      ["chipset \"Snapdragon X Plus 8-Core CRD\" not available for this model", "no-chipset"],
+      ["Only 0.4 GB of RAM is free and Qwen3-8B needs about 7 GB on the NPU.", "ram-low"]
+    ];
+    for (const [raw, id] of cases) expect(translateError(raw)?.id).toBe(id);
+  });
+  it("does not call the generic SDK error a memory limit (the real OOM has its own rule)", () => {
+    // Measured: code -100000 arrives in ~13 ms on a warmed-up server with
+    // the NPU idle — it is GenieX's catch-all, not an out-of-memory report.
+    const e = translateError('{"code":-100000,"error":"SDKError(Unknown error)"}');
+    expect(e?.id).toBe("npu-sdk-error");
+    expect(e?.title).not.toMatch(/memory|out of/i);
+    // the genuine out-of-NPU-memory signature keeps the OOM wording
+    expect(translateError("ggml-hex: HTP0 buffer mapping failed")?.title).toMatch(/did not fit/i);
+  });
+  it("sanitizes the outgoing conversation to what the server accepts", () => {
+    // a restored tool/function turn makes GenieX fail the whole request (code -100000)
+    const dirty = [
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hi" },
+      { role: "tool", content: "result" },
+      { role: "assistant", content: "" },
+      { role: "user", content: null as unknown as string }
+    ];
+    const clean = sanitizeMessages(dirty as never);
+    expect(clean.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(clean[2].content).toBe(" ");
+    expect(clean[3].content).toBe(" ");
+    // never an empty request
+    expect(sanitizeMessages([])).toEqual([{ role: "user", content: " " }]);
+    expect(sanitizeMessages([{ role: "tool", content: "x" } as never])).toEqual([{ role: "user", content: " " }]);
+  });
+  it("merges the history shapes the Gemma template rejects (measured: 500 → 200)", () => {
+    // [user Hello, user Hi] fails with code -100000; the merged turn answers
+    const twoUsers = sanitizeMessages([
+      { role: "user", content: "Hello" },
+      { role: "user", content: "Hi" }
+    ]);
+    expect(twoUsers).toEqual([{ role: "user", content: "Hello\n\nHi" }]);
+    // consecutive assistant turns merge too
+    const twoAssistants = sanitizeMessages([
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+      { role: "assistant", content: "b" },
+      { role: "user", content: "r" }
+    ]);
+    expect(twoAssistants.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(twoAssistants[1].content).toBe("a\n\nb");
+    // a system message in the middle fails; the same text as a leading system answers
+    const midSystem = sanitizeMessages([
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hey" },
+      { role: "system", content: "Be helpful" },
+      { role: "user", content: "Hi" }
+    ]);
+    expect(midSystem.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(midSystem[0].content).toBe("Be helpful");
+    expect(midSystem[3].content).toBe("Hi");
+    // a single leading system is already in the supported position: untouched
+    const leadSystem = sanitizeMessages([
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hi" }
+    ]);
+    expect(leadSystem).toEqual([
+      { role: "system", content: "be brief" },
+      { role: "user", content: "hi" }
+    ]);
+  });
+  it("merges the adjacency a removed middle system CREATES (C01)", () => {
+    // user, system, user: the two users are not adjacent in the input, but the
+    // system-reorder REMOVES the middle turn and turns them into the exact
+    // user,user adjacency the Gemma template rejects — the final merge pass
+    // must catch what the first pass could not yet see.
+    const interleaved = sanitizeMessages([
+      { role: "user", content: "Hello" },
+      { role: "system", content: "Be helpful" },
+      { role: "user", content: "Hi" }
+    ]);
+    expect(interleaved.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(interleaved[0].content).toBe("Be helpful");
+    expect(interleaved[1].content).toBe("Hello\n\nHi");
+    // assistant, system, assistant on either side of the dropped system
+    const sides = sanitizeMessages([
+      { role: "assistant", content: "a" },
+      { role: "system", content: "s" },
+      { role: "assistant", content: "b" },
+      { role: "user", content: "q" }
+    ]);
+    expect(sides.map((m) => m.role)).toEqual(["system", "assistant", "user"]);
+    expect(sides[1].content).toBe("a\n\nb");
+  });
+  it("drops harmless noise", () => {
+    expect(translateError("DSP_INFO UNSUPPORTED_KEY: 49")).toBeNull();
+    expect(translateError("SoX is not installed")).toBeNull();
+    expect(friendly("")).toBeNull();
+    expect(friendly("weird failure")?.id).toBe("unknown");
+  });
+});
+
+describe("misc", () => {
+  it("classifies architectures", () => {
+    expect(classifyArchitecture("llama").cls).toBe("standard");
+    expect(classifyArchitecture("lfm2moe").cls).toBe("fast-hybrid");
+    expect(classifyArchitecture("qwen35").cls).toBe("partial-cpu");
+    expect(classifyArchitecture("zaya1").cls).toBe("unknown");
+  });
+  it("parses repo input", () => {
+    expect(parseRepoInput("https://huggingface.co/unsloth/Qwen3-4B-GGUF/tree/main")).toEqual({ repo: "unsloth/Qwen3-4B-GGUF", quant: null });
+    expect(parseRepoInput("org/m-GGUF:Q4_0")).toEqual({ repo: "org/m-GGUF", quant: "Q4_0" });
+    expect(parseRepoInput("nonsense")).toBeNull();
+  });
+});
+
+import { parseMarkdown, parseInline } from "../src/core/markdown";
+describe("markdown", () => {
+  it("parses blocks, lists and code (including an unfinished fence)", () => {
+    const b = parseMarkdown("# Title\n\nSome **bold** and `code` text with [a link](https://x.io).\n\n- one\n- two\n\n1. first\n2. second\n\n```python\nprint('hi')\n```\n\n> quote\n\n```js\nlet a =");
+    expect(b.map((x) => x.t)).toEqual(["h", "p", "ul", "ol", "code", "quote", "code"]);
+    expect((b[4] as any).lang).toBe("python");
+    expect((b[4] as any).open).toBe(false);
+    expect((b[6] as any).open).toBe(true);
+    expect((b[2] as any).items).toHaveLength(2);
+  });
+  it("never produces markup from raw HTML and ignores non-http links", () => {
+    expect(parseInline("<script>alert(1)</script>")).toEqual([{ t: "text", v: "<script>alert(1)</script>" }]);
+    expect(parseInline("[x](javascript:alert(1))").some((n) => n.t === "link")).toBe(false);
+    expect(parseInline("snake_case_name and 2*3*4")).toEqual([{ t: "text", v: "snake_case_name and 2*3*4" }]);
+  });
+});
+
+import { texToText } from "../src/core/math";
+describe("math in answers", () => {
+  it("turns LaTeX into readable text", () => {
+    expect(texToText("C = \\frac{150}{0.06 \\times \\frac{1}{4}}")).toBe("C = 150/(0.06 × 1/4)");
+    expect(texToText("A = P \\times (1 + r)^t")).toBe("A = P × (1 + r)ᵗ".replace("ᵗ", "^t"));
+    expect(texToText("(1,06)^{0,2496} \\approx 1,0013")).toBe("(1,06)^(0,2496) ≈ 1,0013");
+    expect(texToText("C = 10{,}000 \\text{ €}")).toBe("C = 10,000 €");
+    expect(texToText("0.10 = 10\\%")).toBe("0.10 = 10%");
+    expect(texToText("x^2 + \\pi r_1")).toBe("x² + π r₁");
+  });
+  it("renders $$, \\[ \\] and \\( \\) as math, even next to bold text", () => {
+    const b = parseMarkdown("**Step 3.2: Rearrange** We need $r$:\n$$ I = P \\times r \\times t $$\n$$ r = \\frac{I}{P \\times t} $$\n\n\\[ A = P \\]\n\n$$\nx = 1\n$$");
+    expect(b.map((x) => x.t)).toEqual(["p", "math", "math", "math", "math"]);
+    expect(parseInline("Where \\( A \\) = amount").some((n) => n.t === "math")).toBe(true);
+    expect(parseInline("costs $5 and $10")).toEqual([{ t: "text", v: "costs $5 and $10" }]);
+  });
+});
+
+describe("math: other syntaxes", () => {
+  it("handles environments, fences and accents", () => {
+    expect(texToText("\\begin{aligned} a &= 1 \\\\ b &= \\frac{1}{2} \\end{aligned}")).toBe("a = 1\nb = 1/2");
+    expect(texToText("\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}")).toBe("(1, 2; 3, 4)");
+    expect(texToText("f(x)=\\begin{cases} 1 & x>0 \\\\ 0 & \\text{sinon} \\end{cases}")).toBe("f(x)={ 1 x>0\n{ 0 sinon");
+    expect(texToText("x \\in \\mathbb{R}, \\binom{n}{k}, \\boxed{42}, \\textcolor{red}{y}, \\bar{x}")).toBe("x ∈ ℝ, C(n, k), 42, y, x̄");
+    expect(texToText("\\sum_{i=1}^{n} i")).toBe("∑_(i=1)ⁿ i");
+  });
+  it("parses latex fences and bare environments", () => {
+    const b = parseMarkdown("```latex\nx^2\n```\n\n\\begin{align}\na &= 1 \\\\\nb &= 2\n\\end{align}\n\ntexte");
+    expect(b.map((x) => x.t)).toEqual(["math", "math", "p"]);
+    expect(parseInline("voir \\begin{matrix}1&2\\end{matrix} ici").some((n) => n.t === "math")).toBe(true);
+  });
+});
+
+import { extractPdfText } from "../src/core/pdf";
+describe("pdf text", () => {
+  it("reads a real PDF page by page with pdf.js", async () => {
+    const objs = ["<</Type/Catalog/Pages 2 0 R>>", "<</Type/Pages/Kids[3 0 R 5 0 R]/Count 2>>",
+      "<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R/Resources<</Font<</F1 7 0 R>>>>>>", "STREAM1",
+      "<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 6 0 R/Resources<</Font<</F1 7 0 R>>>>>>", "STREAM2", "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>"];
+    const stream = (t: string) => { const c = `BT /F1 12 Tf 20 150 Td (${t}) Tj 0 -20 Td (second line) Tj ET`; return `<</Length ${c.length}>>\nstream\n${c}\nendstream`; };
+    objs[3] = stream("Capital 10000"); objs[5] = stream("Taux 10 percent");
+    let pdf = "%PDF-1.4\n"; const offs: number[] = [];
+    objs.forEach((o, i) => { offs.push(pdf.length); pdf += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+    const x = pdf.length;
+    pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => String(o).padStart(10, "0") + " 00000 n \n").join("")}trailer<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${x}\n%%EOF`;
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const doc = await pdfjs.getDocument({ data: new TextEncoder().encode(pdf), useWorkerFetch: false, isEvalSupported: false }).promise;
+    const text = await extractPdfText(doc as any);
+    expect(text).toBe("[page 1]\nCapital 10000\nsecond line\n\n[page 2]\nTaux 10 percent\nsecond line");
+  });
+});
+
+import { splitSections, renderPdf, isPdfText, wrapPdfDoc, resolvePdfDocs, parseLocatorReply, locatorMessages, hasPdfDocs } from "../src/core/pdfSections";
+describe("pdf chapters", () => {
+  const page = (items: string[]) => ({ getTextContent: async () => ({ items: items.map((str) => ({ str, hasEOL: true })) }) });
+  const body = (w: string) => `${w} `.repeat(300).trim();
+  it("finds chapters from headings when there is no outline", async () => {
+    const pages = [["Chapter 1 Simple interest", body("rate")], [body("sum")], ["Chapter 2 Geometric sequences", body("ratio term geometric")], ["Chapter 3 Probability", body("dice coin event")]];
+    const doc = { numPages: 4, getPage: async (n: number) => page(pages[n - 1]) };
+    const text = await extractPdfText(doc);
+    expect(text).toContain("[page 3]\n[chapter: Chapter 2 Geometric sequences]");
+    expect(splitSections(text).map((s) => [s.title, s.from, s.to])).toEqual([["Chapter 1 Simple interest", 1, 2], ["Chapter 2 Geometric sequences", 3, 3], ["Chapter 3 Probability", 4, 4]]);
+    expect(isPdfText("a.pdf", text)).toBe(true);
+  });
+  it("uses the PDF outline when it has one", async () => {
+    const doc = {
+      numPages: 3, getPage: async (n: number) => page([`text of page ${n}`]),
+      getOutline: async () => [{ title: "Intro", dest: [0] }, { title: "Results", dest: [2] }],
+    };
+    const text = await extractPdfText(doc);
+    expect(splitSections(text).map((s) => s.title)).toEqual(["Intro", "Results"]);
+  });
+  it("sends only the chapters that answer the question, with the outline", () => {
+    const text = [["Chapter 1 Interest", "simple interest capital rate percentage"], ["Chapter 2 Sequences", "geometric sequence ratio term"], ["Chapter 3 Probability", "dice coin event universe"]]
+      .map(([t, b], i) => `[page ${i + 1}]\n[chapter: ${t}]\n${b} ${"x ".repeat(400)}`).join("\n\n");
+    const out = renderPdf("c.pdf", text, "explain the ratio of a geometric sequence", 1700);
+    expect(out).toContain("2. Chapter 2 Sequences (p. 2) [loaded]");
+    expect(out).toContain("1. Chapter 1 Interest (p. 1)\n");
+    expect(out).not.toContain("simple interest capital");
+    expect(out).toContain("## Chapter 2 Sequences");
+    expect(renderPdf("c.pdf", text, "q", 100000)).not.toContain("Outline");
+  });
+});
+
+describe("pdf locator", () => {
+  const text = [["Chapter 1 Interest", "simple interest"], ["Chapter 2 Sequences", "geometric sequence"], ["Chapter 3 Probability", "dice coin"]]
+    .map(([t, b], i) => `[page ${i + 1}]\n[chapter: ${t}]\n${b} ${"x ".repeat(400)}`).join("\n\n");
+  it("reads the locator reply", () => {
+    expect(parseLocatorReply("2, 3", 3)).toEqual([1, 2]);
+    expect(parseLocatorReply("<think>hm</think>Sections: 3", 3)).toEqual([2]);
+    expect(parseLocatorReply("none", 3)).toEqual([]);
+    expect(parseLocatorReply("all", 3)).toEqual([0, 1, 2]);
+    expect(parseLocatorReply("I do not know", 3)).toBeNull();
+    expect(parseLocatorReply("9", 3)).toBeNull();
+  });
+  it("keeps only the located chapter of the newest question", async () => {
+    const msgs = [
+      { role: "user" as const, content: `${wrapPdfDoc("c.pdf", text, 4000)}\n\nWhat is a sequence?` },
+      { role: "assistant" as const, content: "ok" },
+      { role: "user" as const, content: "and probability?" },
+    ];
+    expect(hasPdfDocs(msgs)).toBe(true);
+    const asked: string[] = [];
+    const out = await resolvePdfDocs(msgs, async (d, q, before) => { asked.push(`${q}|${before}`); return [2]; });
+    expect(asked).toEqual(["and probability?|What is a sequence?"]); // the newest question, plus the one before for "and the other one?" follow-ups
+    const first = out[0].content as string;
+    expect(first).toContain("3. Chapter 3 Probability (p. 3) [loaded]");
+    expect(first).toContain("1. Chapter 1 Interest (p. 1)\n");
+    expect(first).not.toContain("<pdfdoc");
+    expect(first).toContain("What is a sequence?");
+  });
+});

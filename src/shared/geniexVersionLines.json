@@ -1,0 +1,17 @@
+{
+  "about": "What `geniex --version` may print, and the CLI version both parsers must read from it (null: no valid version). Read by tests/geniex-gate.test.ts (src/core/geniexGate.ts) and by the capabilities tests (src-tauri/src/capabilities.rs).",
+  "cases": [
+    { "out": "GenieX CLI Version:     v0.11.0\nQAIRT Runtime Version:  2.50\nLlamaCPP Runtime Hash:  93cf736\n", "version": "0.11.0" },
+    { "out": "Geniex CLI Version: v0.10.0", "version": "0.10.0" },
+    { "out": "\u001b[1mGenieX CLI Version:\u001b[0m v0.12.3", "version": "0.12.3" },
+    { "out": "GenieX CLI Version: v0.11.0 (build 93cf736)", "version": "0.11.0" },
+    { "out": "GenieX version: v0.11.2", "version": "0.11.2" },
+    { "out": "v0.11.0", "version": "0.11.0" },
+    { "out": "0.12.0-rc1", "version": "0.12.0" },
+    { "out": "QAIRT Runtime Version:  2.50.1", "version": null },
+    { "out": "GenieX CLI Version: unknown", "version": null },
+    { "out": "GenieX CLI Version: v0.11", "version": null },
+    { "out": "error: unknown command", "version": null },
+    { "out": "", "version": null }
+  ]
+}

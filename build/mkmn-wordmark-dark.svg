@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 364 80" fill="none">
+  <!-- MKMN AI horizontal lockup: The Reservoir symbol + monoline wordmark -->
+  <g transform="translate(4 4) scale(1.125)">  <path d="M 43.41 7.53 A 27 27 0 1 0 56.47 20.59" stroke="#f5f2ea" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M 36.79 14.13 A 18.5 18.5 0 1 0 49.87 27.21" stroke="#f5f2ea" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M 32.92 21.54 A 10.5 10.5 0 1 0 42.46 31.08" stroke="#be9455" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+  <circle cx="32" cy="32" r="3.4" fill="#be9455"/></g>
+  <path d="M4.5 64 L4.5 0 L26 38 L47.5 0 L47.5 64" transform="translate(92 8)" stroke="#f5f2ea" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M4.5 0 L4.5 64 M40 0 L4.5 36 M16 24.3 L41 64" transform="translate(162 8)" stroke="#f5f2ea" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M4.5 64 L4.5 0 L26 38 L47.5 0 L47.5 64" transform="translate(224 8)" stroke="#f5f2ea" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M4.5 64 L4.5 0 L41.5 64 L41.5 0" transform="translate(294 8)" stroke="#f5f2ea" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

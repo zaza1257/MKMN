@@ -1,0 +1,21 @@
+# ARM64 Windows SDK import libraries are machine-local: this config points at a
+# repo-relative junction (native-sdk -> wherever the libs live on this machine), NOT a
+# personal absolute path. A fresh clone recreates the junction with:
+#   powershell -ExecutionPolicy Bypass -File ../scripts/setup-arm64-libs.ps1
+# Packaging fails loudly when the libraries are absent instead of linking against a
+# path only one developer happens to have.
+[build]
+rustflags = [
+    "-Lnative=native-sdk/lib",
+]
+
+[host]
+rustflags = [
+    "-Lnative=native-sdk/lib",
+]
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld"
+rustflags = [
+    "-Lnative=native-sdk/lib",
+]

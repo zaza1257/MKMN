@@ -1,0 +1,257 @@
+import { describe, expect, it } from "vitest";
+import { FoundryLocal, deviceBadge, foundryCatalogEntries, prettyAlias, bestVariant, foundryTargets, knownVariants, normalizeName, parseCatalogJson, parseModelIds, parseModelList, parseServiceUrl } from "../src/core/foundry";
+import { droppableFields, streamChat } from "../src/core/chat";
+import { enginePairs } from "../src/core/benchExport";
+import type { BenchTarget, ModelResult } from "../src/core/bench";
+
+const LIST = `Alias                          Device     Task           File Size    License      Model ID
+-----------------------------------------------------------------------------------------------
+phi-4                          GPU        chat           8.37 GB      MIT          Phi-4-cuda-gpu
+                               CPU        chat           10.16 GB     MIT          Phi-4-generic-cpu
+-----------------------------------------------------------------------------------------------
+qwen2.5-0.5b                   NPU        chat,tools     0.52 GB      apache-2.0   qwen2.5-0.5b-instruct-qnn-npu
+                               CPU        chat,tools     0.80 GB      apache-2.0   qwen2.5-0.5b-instruct-generic-cpu
+-----------------------------------------------------------------------------------------------
+deepseek-r1-7b                 NPU        chat           4.20 GB      MIT          deepseek-r1-distill-qwen-7b-qnn-npu
+-----------------------------------------------------------------------------------------------
+whisper-tiny                   CPU        speech         0.25 GB      MIT          openai-whisper-tiny-generic-cpu
+`;
+
+const target = (key: string, name: string, extra: Partial<BenchTarget> = {}): BenchTarget => ({ key, name, repo: "r", quant: "Q4_0", sizeGB: 1, paramsB: 1, source: "Specialists", ...extra });
+
+describe("Foundry Local", () => {
+  it("reads the table of `foundry model list`, with the rows that only name a device", () => {
+    const v = parseModelList(LIST);
+    expect(v.map((x) => `${x.alias}/${x.device}`)).toEqual(["phi-4/GPU", "phi-4/CPU", "qwen2.5-0.5b/NPU", "qwen2.5-0.5b/CPU", "deepseek-r1-7b/NPU", "whisper-tiny/CPU"]);
+    expect(v[2]).toMatchObject({ modelId: "qwen2.5-0.5b-instruct-qnn-npu", sizeGB: 0.52 });
+    expect(bestVariant(v.filter((x) => x.alias === "qwen2.5-0.5b")).device).toBe("NPU");
+    expect(bestVariant(v.filter((x) => x.alias === "phi-4")).device).toBe("GPU");
+  });
+
+  it("finds the server and the model ids", () => {
+    expect(parseServiceUrl("🟢 Model management service is running on http://localhost:5273/openai/status")).toBe("http://127.0.0.1:5273");
+    expect(parseServiceUrl("not running")).toBeNull();
+    expect(parseModelIds({ data: [{ id: "a" }, { id: "b" }, {}] })).toEqual(["a", "b"]);
+  });
+
+  it("matches our names to Foundry's aliases", () => {
+    expect(normalizeName("Qwen2.5-0.5B-Instruct")).toBe("qwen2.5-0.5b");
+    expect(normalizeName("DeepSeek-R1-Distill-Qwen-7B")).toBe("deepseek-r1-7b");
+    expect(normalizeName("Mistral-7B-Instruct-v0.2")).toBe("mistral-7b-v0.2");
+    expect(normalizeName("Phi-3.5-mini-instruct")).toBe("phi-3.5-mini");
+  });
+
+  it("makes a twin of each model it shares with the roster, adds its own, and leaves out speech and what is too big", () => {
+    const roster = [target("a", "Qwen2.5-0.5B-Instruct"), target("b", "DeepSeek-R1-Distill-Qwen-7B"), target("c", "Gemma-3-4B-it")];
+    const t = foundryTargets(roster, parseModelList(LIST), 7);
+    expect(t.map((x) => x.key)).toEqual(["foundry:qwen2.5-0.5b", "foundry:deepseek-r1-7b"]); // phi-4 is 8.4 GB, whisper is speech
+    expect(t[0]).toMatchObject({ name: "Qwen2.5-0.5B-Instruct (Foundry Local)", engine: "foundry", twinOf: "a", foundryDevice: "NPU", foundryModelId: "qwen2.5-0.5b-instruct-qnn-npu" });
+    const only = foundryTargets([], parseModelList(LIST), 7);
+    expect(only.every((x) => x.twinOf === undefined)).toBe(true);
+    expect(only.map((x) => x.name)).toContain("qwen2.5-0.5b (Foundry Local)");
+  });
+
+  it("runs the commands in order, says where it is, and keeps what they said", async () => {
+    const calls: string[] = [];
+    const run = async (args: string[]) => {
+      calls.push(args.join(" "));
+      if (args[0] === "service" && args[1] === "status") return { code: 0, out: "running on http://localhost:5555/openai/status" };
+      if (args[0] === "cache") return { code: 0, out: "qwen2.5-0.5b-instruct-qnn-npu" };
+      return { code: 0, out: "ok" };
+    };
+    const fetchFn = (async () => ({ ok: true, json: async () => ({ data: [{ id: "qwen2.5-0.5b-instruct-qnn-npu:1" }] }) })) as never;
+    const f = new FoundryLocal(run, fetchFn);
+    expect(await f.isInstalled("qwen2.5-0.5b", "qwen2.5-0.5b-instruct-qnn-npu")).toBe(true);
+    const r = await f.load("qwen2.5-0.5b", "qwen2.5-0.5b-instruct-qnn-npu");
+    expect(r).toEqual({ endpoint: "http://127.0.0.1:5555/v1", modelId: "qwen2.5-0.5b-instruct-qnn-npu:1" });
+    expect(calls).toEqual(["cache list -o json", "cache list", "service start", "service status", "model load qwen2.5-0.5b"]);
+    await f.unloadLast();
+    expect(calls.slice(-2)).toEqual(["model unload qwen2.5-0.5b", "server stop"]);
+    expect(f.recent.some((l) => l.includes("foundry model load qwen2.5-0.5b"))).toBe(true);
+  });
+
+  it("reads what is installed from the JSON cache list, so a long name the table wraps is still found", async () => {
+    // measured on Foundry Local 0.12.1: the text table wraps a long alias over two rows ("phi-4-mini-instruc" / "t-generic-cpu-dq44"),
+    // and the old word split then said the model was not installed
+    const table = `| Alias              | Size   | Device |
+|--------------------+--------+--------|
+| phi-4-mini-instruc | 4.2 GB | cpu    |
+| t-generic-cpu-dq44 |        |        |`;
+    const json = '{"models":[{"alias":"phi-4-mini-instruct-generic-cpu-dq44","id":"phi-4-mini-instruct-generic-cpu-dq44:1","device":"Cpu","cached":true,"loaded":false}]}';
+    const f = new FoundryLocal(async (a: string[]) => ({ code: 0, out: a.includes("-o") ? json : table }));
+    expect(await f.isInstalled("phi-4-mini-instruct-generic-cpu-dq44", "phi-4-mini-instruct-generic-cpu-dq44:1")).toBe(true);
+    expect(await f.isInstalled("qwen3-0.6b", "qwen3-0.6b-generic-cpu:4")).toBe(false);
+    // the set holds names, never the table's own words
+    const c = await f.cached();
+    expect(c && [...c].some((w) => w.startsWith("+") || w === "alias")).toBe(false);
+  });
+
+  it("never deletes a model it cannot tell was there", async () => {
+    const f = new FoundryLocal(async () => ({ code: 1, out: "unknown command" }));
+    expect(await f.isInstalled("x", "y")).toBe(true);
+  });
+
+  it("pairs the two engines in the report", () => {
+    const res = (name: string, q: number, tps: number) => ({ name, summary: { ran: 5, quality: q, tokPerSec: tps, ttftSec: 0.5 } }) as unknown as ModelResult;
+    const pairs = enginePairs([res("Qwen2.5-0.5B-Instruct", 60, 40), res("Qwen2.5-0.5B-Instruct (Foundry Local)", 58, 45), res("Alone (Foundry Local)", 50, 10)]);
+    expect(pairs.map(([n]) => n)).toEqual(["Qwen2.5-0.5B-Instruct"]);
+  });
+  it("reads the catalog as the server gives it, with loose field names", () => {
+    const v = parseCatalogJson([
+      { id: "qwen2.5-0.5b-instruct-qnn-npu:1", alias: "qwen2.5-0.5b", runtime: { deviceType: "NPU" }, fileSizeMb: 512, task: "chat" },
+      { name: "phi-4-generic-cpu", alias: "phi-4", deviceType: "cpu", sizeGB: 10 },
+      { alias: "no-id" },
+    ]);
+    expect(v.map((x) => `${x.alias}/${x.device}`)).toEqual(["qwen2.5-0.5b/NPU", "phi-4/CPU"]);
+    expect(v[0].sizeGB).toBeCloseTo(0.5, 2);
+    expect(parseCatalogJson({ models: [{ id: "a", alias: "b" }] })).toHaveLength(1);
+    expect(parseCatalogJson("nope")).toEqual([]);
+  });
+
+  it("reads a table with box characters and extra columns", () => {
+    const boxed = `┌──────────┬────────┬──────┬─────────┬─────────┐
+│ Alias    │ Device │ Task │ Size    │ Model ID│
+├──────────┼────────┼──────┼─────────┼─────────┤
+│ phi-4    │ GPU    │ chat │ 8.37 GB │ Phi-4-cuda-gpu │
+└──────────┴────────┴──────┴─────────┴─────────┘`;
+    expect(parseModelList(boxed).map((x) => x.alias)).toContain("phi-4");
+  });
+
+  it("keeps the comparison possible when the catalog cannot be read: known aliases still pair with the roster", () => {
+    const known = knownVariants();
+    expect(known.length).toBeGreaterThan(3);
+    expect(known.every((k) => k.modelId && k.alias)).toBe(true);
+  });
+  it("reads the 0.12 table (Alias | Access | Type | Size | Device | Tools | Cached): the alias is the name to ask for", () => {
+    const v = parseModelList(`+------------------+--------+--------+---------+--------+-------+--------+
+  | Alias              | Access | Type       | Size    | Device | Tools | Cached |
+  +------------------------------------------------------------------------------+
+  | qwen2.5-0.5b       | Public | Chat       | 0.43 GB | NPU    | ✓     | ○      |
+  | gpt-oss-20b-t      | Public | Chat       | 12 GB   | GPU    | ✓     | ○      |
+  | urbo               |        |            |         |        |       |        |
+  | whisper-tiny       | Public | Speech     | 131 MB  | CPU    | ·     | ○      |
+  +------------------------------------------------------------------------------+`);
+    expect(v.map((x) => `${x.alias}/${x.device}/${x.modelId}`)).toEqual(["qwen2.5-0.5b/NPU/qwen2.5-0.5b", "gpt-oss-20b-t/GPU/gpt-oss-20b-t", "whisper-tiny/CPU/whisper-tiny"]);
+    expect(v[0].sizeGB).toBeCloseTo(0.43, 2);
+    expect(v[0].task).toMatch(/chat/i);
+  });
+
+  it("uses `server` when this version has no `service`", async () => {
+    const calls: string[] = [];
+    const run = async (a: string[]) => {
+      calls.push(a.join(" "));
+      if (a[0] === "service") return { code: 2, out: "error: Unknown command: 'service'" };
+      if (a[0] === "server" && a[1] === "status") return { code: 0, out: "running on http://127.0.0.1:5273/openai/status" };
+      return { code: 0, out: "" };
+    };
+    const f = new FoundryLocal(run, (async () => ({ ok: false })) as unknown as typeof fetch);
+    expect(await f.serviceUrl()).toBe("http://127.0.0.1:5273");
+    expect(calls).toContain("server start");
+  });
+  it("sends the request again without the optional field a server refuses", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = (async (_u: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body));
+      if (bodies.length === 1) return new Response('{"error":{"message":"Unsupported parameter: nonzero frequency_penalty and presence_penalty are not supported"}}', { status: 400 });
+      return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 });
+    }) as unknown as typeof fetch;
+    const events: unknown[] = [];
+    for await (const ev of streamChat({ endpoint: "http://x/v1", model: "m", messages: [{ role: "user", content: "hi" }], sampling: { temperature: 0.6, top_p: 0.95, top_k: 20, presence_penalty: 1.5, max_tokens: 50 }, fetchFn }, "t")) events.push(ev);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toHaveProperty("presence_penalty", 1.5);
+    expect(bodies[1]).not.toHaveProperty("presence_penalty");
+    expect(bodies[1]).toHaveProperty("temperature", 0.6);
+    // what was refused is kept by the caller: the next request does not send it, so no second 400
+    const refused = new Set<string>(["presence_penalty"]);
+    bodies.length = 0;
+    for await (const ev of streamChat({ endpoint: "http://x/v1", model: "m", messages: [{ role: "user", content: "hi" }], sampling: { temperature: 0.6, top_p: 0.95, presence_penalty: 1.5, max_tokens: 50 }, fetchFn: (async (_u: string, init: { body: string }) => { bodies.push(JSON.parse(init.body)); return new Response("data: [DONE]\n\n", { status: 200 }); }) as unknown as typeof fetch, refused }, "t")) void ev;
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toHaveProperty("presence_penalty");
+    expect(events.length).toBeGreaterThan(0);
+    expect(droppableFields("model not found", { top_k: 1 })).toEqual([]);
+  });
+  it("degrades the thinking fields a server refuses instead of failing the request", async () => {
+    // A 400 that names `enable_think` (a field only some servers know) must drop it
+    // and retry: refusing to think differently is not a reason to refuse the message.
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = (async (_u: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body));
+      if (bodies.length === 1) return new Response('{"error":{"message":"unknown field: enable_think"}}', { status: 400 });
+      return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 });
+    }) as unknown as typeof fetch;
+    const events: unknown[] = [];
+    for await (const ev of streamChat({ endpoint: "http://x/v1", model: "m", messages: [{ role: "user", content: "hi" }], sampling: { temperature: 0.6, max_tokens: 50 }, body: { enable_think: false, chat_template_kwargs: { enable_thinking: false }, reasoning_effort: "none" }, fetchFn }, "t")) events.push(ev);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toHaveProperty("enable_think", false);
+    expect(bodies[1]).not.toHaveProperty("enable_think");
+    // The whole answer still arrives.
+    expect(events.some((e) => (e as { type: string }).type === "answer")).toBe(true);
+    // And the named-only case: droppableFields finds the thinking field in isolation.
+    expect(droppableFields("unknown field: enable_think", { enable_think: false, chat_template_kwargs: { enable_thinking: false } })).toEqual(["enable_think"]);
+  });
+  it("asks again without streaming when the stream is cut before the first word", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = (async (_u: string, init: { body: string }) => {
+      const b = JSON.parse(init.body); bodies.push(b);
+      if (b.stream) return new Response(new ReadableStream({ start(c) { c.error(new TypeError("terminated")); } }), { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "hello" }, finish_reason: "stop" }], usage: { completion_tokens: 8 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out: { type: string; text?: string }[] = [];
+    for await (const ev of streamChat({ endpoint: "http://x/v1", model: "m", messages: [{ role: "user", content: "hi" }], sampling: { temperature: 0.6, top_p: 0.95, max_tokens: 50 }, fetchFn }, "t")) out.push(ev as never);
+    expect(bodies.map((b) => b.stream)).toEqual([true, false]);
+    expect(bodies[1]).not.toHaveProperty("stream_options");
+    expect(out.find((e) => e.type === "answer")?.text).toBe("hello");
+    expect(out.at(-1)?.type).toBe("done");
+  });
+
+  it("says why when the stream is cut and the plain request fails too", async () => {
+    const fetchFn = (async (_u: string, init: { body: string }) => JSON.parse(init.body).stream
+      ? new Response(new ReadableStream({ start(c) { c.error(new TypeError("terminated")); } }), { status: 200 })
+      : new Response('{"error":"context length exceeded"}', { status: 500 })) as unknown as typeof fetch;
+    const run = async () => { for await (const ev of streamChat({ endpoint: "http://x/v1", model: "m", messages: [{ role: "user", content: "hi" }], sampling: { temperature: 0.6, top_p: 0.95, max_tokens: 50 }, fetchFn }, "t")) void ev; };
+    await expect(run()).rejects.toThrow(/terminated.*context length exceeded|context length exceeded/);
+  });
+  it("gathers everything readable about Foundry Local into the log", async () => {
+    const calls: string[] = [];
+    const run = async (a: string[]) => { calls.push(a.join(" ")); return { code: a[0] === "status" ? 2 : 0, out: `answer of ${a.join(" ")}` }; };
+    const f = new FoundryLocal(run, (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch, async () => ["── C:/x/foundry.log (last 2 of 2 lines) ──", "  boom"]);
+    const lines = await f.diagnose(true);
+    expect(calls).toEqual(expect.arrayContaining(["server status", "status", "cache list", "--help", "model list --variants"]));
+    expect(lines.join("\n")).toMatch(/boom/);
+    expect(lines.join("\n")).toMatch(/\$ foundry status {2}\(exit 2\)/);
+    expect(f.recent.join("\n")).toMatch(/boom/);
+  });
+  it("ends a daemon that died while loading a model, so its error box and its hold on the NPU do not block the run", async () => {
+    let killed = 0;
+    const run = async (a: string[]) => {
+      if (a[0] === "server" && a[1] === "status") return { code: 0, out: "Web URLs http://127.0.0.1:5555" };
+      if (a[0] === "model" && a[1] === "load") return { code: 4, out: "error: Daemon closed the connection while awaiting response to op 'model.load'." };
+      return { code: 0, out: "" };
+    };
+    const f = new FoundryLocal(run, (async () => ({ ok: true, json: async () => ({}) })) as unknown as typeof fetch, async () => [], async () => { killed++; });
+    await expect(f.load("phi-3.5-mini", "phi-3.5-mini")).rejects.toThrow(/Daemon closed the connection/);
+    expect(killed).toBe(1);
+    expect(f.recent.join("\n")).toMatch(/daemon crashed while loading/);
+  });
+  it("asks for the build Foundry says it loaded, when it is not the alias with a suffix", async () => {
+    const run = async (a: string[]) => {
+      if (a[0] === "server" && a[1] === "status") return { code: 0, out: "Web URLs http://127.0.0.1:5555" };
+      if (a[0] === "model" && a[1] === "load") return { code: 0, out: "Loading model\n● success: Loaded 'deepseek-r1-7b' (NPU variant\n'deepseek-r1-distill-qwen-7b-qnn-npu:2') into memory." };
+      return { code: 0, out: "" };
+    };
+    const f = new FoundryLocal(run, (async () => ({ ok: true, json: async () => ({ data: [{ id: "deepseek-r1-distill-qwen-7b-qnn-npu:2" }, { id: "deepseek-r1-distill-qwen-1.5b-qnn-npu:2" }] }) })) as unknown as typeof fetch);
+    expect((await f.load("deepseek-r1-7b", "deepseek-r1-7b")).modelId).toBe("deepseek-r1-distill-qwen-7b-qnn-npu:2");
+  });
+  it("turns the Foundry catalog into entries of the app's list, on the best build of each model", () => {
+    const entries = foundryCatalogEntries(parseModelList(LIST));
+    expect(entries.map((e) => e.id)).toEqual(["foundry:qwen2.5-0.5b", "foundry:deepseek-r1-7b", "foundry:phi-4"]);
+    const q = entries[0];
+    expect(q).toMatchObject({ name: "Qwen2.5-0.5B (Foundry Local)", repo: "qwen2.5-0.5b", foundryDevice: "NPU", paramsB: 0.5, architecture: "foundry", quant: null });
+    expect(entries.find((e) => e.id === "foundry:phi-4")?.foundryDevice).toBe("GPU"); // no NPU build: the GPU one
+    expect(entries.some((e) => /whisper/.test(e.id))).toBe(false);
+    expect(foundryCatalogEntries(parseModelList(LIST), 5).map((e) => e.id)).toEqual(["foundry:qwen2.5-0.5b", "foundry:deepseek-r1-7b"]);
+    expect(prettyAlias("deepseek-r1-7b")).toBe("Deepseek-R1-7B");
+    expect(deviceBadge("GPU")).toBe("gpu");
+    expect(deviceBadge(undefined)).toBeUndefined();
+  });
+});

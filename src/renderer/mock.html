@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- The same policy the packaged app runs under (src-tauri/tauri.conf.json): the preview
+       here is a standing check that the interface keeps working inside it. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*; worker-src 'self' blob:; frame-src 'self' http://artifact.localhost; media-src 'self' blob:" />
+  <title>MKMN AI · preview (mock data)</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./mock-entry.ts"></script>
+</body>
+</html>

@@ -1,0 +1,1276 @@
+import * as fs from "fs";
+import { energyPerToken, type BatteryReading, type Energy } from "./battery";
+import { mappingFailed, serverReason, failureKind, failureSummary, ladder, looksGarbled, prefillPrompt, type LoadSetting } from "./npuLoad";
+import { evaluatedPromptTokens } from "./chat";
+export { mappingFailed, serverReason } from "./npuLoad";
+import * as os from "os";
+import * as path from "path";
+import type { CatalogEntry, ChatStats } from "../shared/types";
+import type { RunsOn } from "./placement";
+import { buildExport, buildLaunchReport } from "./benchExport";
+import { CANDIDATE_TAGS } from "./benchCandidates";
+import { coverage, runFingerprint, SpeedRep, SpeedTrack, BENCH_SECTIONS, BenchMode, BenchSection, BenchTarget, BenchTest, LaunchStats, ModelResult, TestResult, buildModelReport, buildReport, buildSectionReport, classifyFailure, estimateRun, slug, summarize, testCosts, testsFor } from "./bench";
+import { Check } from "./benchChecks";
+import { ref as entryRef } from "./catalog";
+import { Gateway } from "./harness/gateway";
+import { cpuBusy, judgePlacement, logPlacement } from "./placement";
+import { applyEffort, effectiveEffort, thinkingSupport } from "./effort";
+import { canTransition, type MachineState } from "../shared/stateMachines";
+
+export interface BenchConfig {
+  /** Keys of the roster entries to test, in order. */
+  keys: string[];
+  mode: BenchMode;
+  /** Leave the models that were installed for the run installed (by default each one is removed after its tests to make room). */
+  keepInstalled: boolean;
+  /** Continue the latest run: models that already have a finished result file are skipped. */
+  resume: boolean;
+  /** Minutes of non-stop writing on the biggest model before the first test, so every model is measured on a NPU that is already warm (0 = none). */
+  warmupMin?: number;
+}
+
+/** The bench registry machine names these; the runner and any screen share one list. */
+export type BenchPhase = MachineState<"bench">;
+
+/**
+ * The poll that runs while a placement is being timed. Utilization comes from the cheap
+ * live probe; the NPU memory comes from the dedicated memory probe, which spawns a process
+ * and takes seconds per read, so it is read at most once every `memEveryMs` (5 s) — a poll
+ * that read it every turn would launch processes non-stop during the very load the
+ * benchmark is timing. The reported figures are unchanged: the peak of every reading seen
+ * (the cheap probe's memory too, when it carries one), and the placement delta keeps the
+ * peaks it was computed from.
+ */
+export async function pollPlacement(
+  probe: () => Promise<{ util: number | null; memGB: number | null }>,
+  memProbe: (() => Promise<{ util: number | null; memGB: number | null }>) | null,
+  onSample: (x: { util: number | null; memGB: number | null }) => void,
+  o: { shouldRun: () => boolean; memEveryMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number }
+): Promise<{ peakUtil: number | null; peakMem: number | null }> {
+  const memEvery = o.memEveryMs ?? 5_000;
+  const sleep = o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = o.now ?? Date.now;
+  let peakUtil: number | null = null;
+  let peakMem: number | null = null;
+  let lastMemAt = -Infinity;
+  while (o.shouldRun()) {
+    // without a dedicated memory probe the cheap probe is the memory source (one reading
+    // a turn, as before); with one, it is read at most every `memEvery`
+    if (memProbe && now() - lastMemAt >= memEvery) {
+      lastMemAt = now();
+      const m = await memProbe().catch(() => null);
+      if (m) {
+        onSample(m);
+        if (m.memGB !== null) peakMem = Math.max(peakMem ?? 0, m.memGB);
+      }
+    }
+    const x = await probe().catch(() => null);
+    if (x) {
+      onSample(x);
+      if (x.util !== null) peakUtil = Math.max(peakUtil ?? 0, x.util);
+      if (x.memGB !== null) peakMem = Math.max(peakMem ?? 0, x.memGB);
+    }
+    await sleep(200); // never a tight loop, whatever the probe's speed
+  }
+  return { peakUtil, peakMem };
+}
+
+
+/** One second of the run: how hard the machine works, and how fast the model writes. null = not measured (yet). */
+export interface BenchSample {
+  /** Seconds since the run started. */
+  t: number;
+  cpu: number | null;
+  ramPct: number | null;
+  npu: number | null;
+  npuMemGB: number | null;
+  tokPerSec: number | null;
+}
+
+/** What the model in front of the benchmark is saying right now. */
+export interface BenchLive {
+  model: string;
+  testId: string;
+  test: string;
+  section: BenchSection;
+  /** What it was asked (cut). */
+  prompt: string;
+  answer: string;
+  thinking: string;
+  /** While it writes: the number of stream chunks — an ESTIMATE of the tokens (B13), replaced by the server's verified usage when the request ends. */
+  tokens: number;
+  tokensEstimated: boolean;
+  ttftSec: number | null;
+  tokPerSec: number | null;
+  elapsedSec: number;
+  /** The NPU warm-up, not a test. */
+  warmup?: boolean;
+  /** The test is over: its score and why. */
+  done: boolean;
+  score?: number;
+  note?: string;
+}
+
+/** A finished test of the model being tested, for the strip of coloured cells. */
+export interface LiveTestRow {
+  id: string;
+  title: string;
+  section: BenchSection;
+  score: number;
+  note: string;
+  ttftSec: number | null;
+  tokPerSec: number | null;
+  skipped?: boolean;
+  error?: boolean;
+}
+
+export interface BenchRow {
+  key: string;
+  name: string;
+  sizeGB: number;
+  quality: number | null;
+  /** Why the model could not be tested to the end; with a quality, the model was tested in part. */
+  skipReason?: string;
+  runsOn: RunsOn;
+  bySection: Partial<Record<BenchSection, number>>;
+  ttftSec: number | null;
+  tokPerSec: number | null;
+  coldStartSec: number | null;
+  ran: number;
+  failed: number;
+  error?: string;
+  /** Launch check: the model loaded and answered a real prompt. */
+  launched?: boolean;
+  /** The window the server was started with, and the setting that was needed. */
+  window?: number | null;
+  loadSetting?: string;
+  /** Share of the CPU cores busy while the model answered (the whole PC, not only the engine), null when not measured. */
+  cpuBusyPct?: number | null;
+  /** Launch check: the prompt read per second, the draw while writing and the energy of a token (battery only). */
+  prefillTokPerSec?: number | null;
+  genWatts?: number | null;
+  mWhPerToken?: number | null;
+  /** The model's result file (JSON); the Markdown one sits next to it. */
+  file: string;
+}
+
+export interface BenchState {
+  running: boolean;
+  phase: BenchPhase;
+  runDir: string | null;
+  summaryFile: string | null;
+  mode: BenchMode;
+  modelIndex: number;
+  modelCount: number;
+  current: string | null;
+  testIndex: number;
+  testCount: number;
+  currentTest: string | null;
+  startedAt: number | null;
+  rows: BenchRow[];
+  log: string[];
+  /** 0 to 100, weighted by how long each model is expected to take. */
+  percent: number;
+  elapsedSec: number;
+  /** null until it can be told. */
+  etaSec: number | null;
+  /** The last few minutes, one sample a second. */
+  series: BenchSample[];
+  /** The tests of the model being tested so far. */
+  currentTests: LiveTestRow[];
+  currentSizeGB: number | null;
+  /** Seconds of warm-up left, null when not warming. */
+  warmupLeftSec: number | null;
+  /** When the current step began (ms since the epoch), so the window can say how long it has lasted. */
+  phaseStartedAt: number | null;
+  /** The NPU warm-up is still to come. */
+  warmupPending: boolean;
+}
+
+export interface BenchDeps {
+  /** Where runs are written: one folder per run. */
+  root: string;
+  machine?: string;
+  /** The catalog entry of a roster model (found, or looked up on Hugging Face). */
+  resolve(t: BenchTarget): Promise<CatalogEntry>;
+  /**
+   * Is this entry's exact build in the cache? Tri-state: true / false / null —
+   * null means the inventory could not be READ (a failed `geniex list`), which is
+   * not the same as "nothing is installed": cleanup must never destroy on a guess.
+   */
+  isInstalled(e: CatalogEntry): Promise<boolean | null>;
+  /** `alreadyInstalled` (the cache already had it) is ownership evidence: the run did not create the artifact. */
+  install(e: CatalogEntry): Promise<{ ok: boolean; error?: string; alreadyInstalled?: boolean }>;
+  cancelInstall(e: CatalogEntry): void;
+  uninstall(e: CatalogEntry): Promise<{ ok: boolean; message: string }>;
+  /** A model that stays installed after the run must be known to the app. */
+  keep(e: CatalogEntry, t: BenchTarget): void;
+  /** Starts (or reuses) the model server for this model and says where it is, how big its window is, and WHICH model it serves:
+   * the resolved cache reference the server reports (B03) — completions are named with it, never with the catalog's spelling,
+   * and the reported window is the one actually served (a compiled QAIRT window or a configured GGUF one), never a recommendation. */
+  start(e: CatalogEntry, setting?: LoadSetting): Promise<{ endpoint: string; nctx: number; model?: string; backend?: string; contextKind?: "compiled" | "configurable" | null }>;
+  /** A model that only loaded under this setting: kept, so the app starts it that way. */
+  remember?(e: CatalogEntry, setting: LoadSetting): void;
+  /** The user lets a model that does not load on the NPU alone run in hybrid mode (part on the CPU). */
+  allowHybrid?(): boolean;
+  /** Closes the servers of the engines that are left running and may hold the NPU (a geniex that is not ours, Foundry Local's daemon); says which. */
+  closeStray?(): Promise<string[]>;
+  /** How long the NPU is given to let go of its memory before something is done about it (30 s). */
+  npuWaitMs?: number;
+  /** The NPU can be reset without asking the user (allowed once), and the reset itself. */
+  canResetNpu?(): Promise<boolean>;
+  resetNpu?(): Promise<{ ok: boolean; message: string }>;
+  /** Where the model was seen to run (NPU, mixed, CPU): it gets a badge. */
+  placed?(e: CatalogEntry, runsOn: RunsOn): void;
+  /** A model's run is finished and written: its measured speed and device go to the profile the Models list reads. */
+  measured?(r: ModelResult): void;
+  stopServer(): Promise<void>;
+  freeDiskGB(): number | null;
+  /** One reading of the battery, for the energy of a token: only on the battery. */
+  battery?(): Promise<BatteryReading>;
+  /** One reading of the NPU counters (of the model server's process when they name processes, else of the whole NPU). */
+  probe(): Promise<{ util: number | null; memGB: number | null }>;
+  /**
+   * One reading that MUST carry the NPU memory: a cheap live probe may have utilization
+   * without memory (the host's own sample has none), but the memory-record points — the
+   * baselines, the loaded reading, the placement delta — need the counter source that
+   * measures it. Defaults to `probe` where the probe already answers memory.
+   */
+  probeMemory?(): Promise<{ util: number | null; memGB: number | null }>;
+  /** The latest lines of the model server's log. */
+  serverLog(): string[];
+  /** Everything readable about the engine that ran the model, when it failed: only the engines that have such a thing (Foundry Local). */
+  diagnose?(entry: CatalogEntry): Promise<string[]>;
+  /** What the server is started with: the benchmark measures that. */
+  compute(): "npu" | "cpu";
+  /** CPU times per core, as os.cpus() gives them (replaced in tests: the real load of a busy machine is not a fixture). */
+  cpus?: () => { times: Record<string, number> }[];
+  emit(s: BenchState): void;
+  /** The words a model writes, as it writes them (not kept in the state: it changes ten times a second). */
+  emitLive?(l: BenchLive): void;
+  /** Chip, memory, NPU driver, Windows, GenieX and app versions, for the exported report. */
+  machineInfo?(): Promise<[string, string][]>;
+  /** One line on what the app expects of this model on this PC (memory needed against the NPU budget, window, format), for the log. */
+  describe?(e: CatalogEntry): Promise<string>;
+  /** How long one model may take before it is given up on, by test set (ms). Default: express 10, quick 35, full 80 minutes. */
+  modelBudgetMs?: number;
+  /** A model that writes slower than this (tokens/s, median of its first tests) is given up on. Default 1.2. */
+  minTokPerSec?: number;
+  /** Milliseconds between samples of the machine (1000; shorter in tests). */
+  monitorMs?: number;
+  /** Memory of the PC, as os.totalmem() and os.freemem() give it. */
+  ram?: () => { total: number; free: number };
+  fetchFn?: typeof fetch;
+  now?: () => number;
+  /** Time the NPU is given to let go of a model that failed to load, before one more try and before the next model (ms; 8000, shorter in tests). */
+  loadRetryMs?: number;
+  /** Time allowed for one test. */
+  testTimeoutMs?: number;
+  /** Called once when a run has ended (done, stopped or by an error): the app releases the runtime lease of the run there. */
+  onRunEnd?(): void;
+}
+
+const THINK_ROOM = 1800;
+/** Express answers are cut short, and a model that must think gets less room for it. */
+const EXPRESS_ANSWER = 160;
+const EXPRESS_THINK_ROOM = 700;
+
+/** How the tests are asked of a model: thinking off where it can be, on for the tests that need it. */
+export function effortFor(test: BenchTest, entry: CatalogEntry) {
+  const support = thinkingSupport(entry);
+  const want = test.think ? ("medium" as const) : ("off" as const);
+  return { support, level: effectiveEffort(want, support) };
+}
+
+/* seconds and a little random in the folder: two runs started in the same minute must not write into the same directory */
+const stamp = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}-${Math.random().toString(36).slice(2, 5)}`;
+
+/**
+ * Foundry Local sizes the attention cache of a model on the NPU as the prompt plus `max_tokens`, and the NPU runs the prompt in blocks of 64:
+ * with a small limit (the 12 and 16 the checks ask for) the last block runs past the cache and the daemon dies (GroupQueryAttention:
+ * "seqlens_k out of range", "total_sequence_length must be at least kv_sequence_length"). A model stops at its end token anyway, so a
+ * higher limit costs nothing for a short answer.
+ */
+export const FOUNDRY_MIN_TOKENS = 256;
+
+export class BenchRunner {
+  private st: BenchState = BenchRunner.idle();
+  private ac: AbortController | null = null;
+  private entry: CatalogEntry | null = null;
+  /** Expected minutes of each model of this run, from its size: the weights of the progress. */
+  private weights: number[] = [];
+  private monitor: ReturnType<typeof setInterval> | null = null;
+  private lastNpu: { util: number | null; memGB: number | null } = { util: null, memGB: null };
+  private probing = false;
+  private placing = false;
+  private liveTps: number | null = null;
+  private lastCpu: { times: Record<string, number> }[] | null = null;
+  private warmDone = false;
+  private warmTotal = 0;
+  private runStartedAt = 0;
+  /** Bumped once per model-server start attempt: the attempt that owns the server is the newest one. */
+  private startSeq = 0;
+  private warmSeries: { t: number; tps: number | null }[] = [];
+  private refStartTps: number | null = null;
+  /** The model that warmed the NPU up: kept until the end so its speed can be measured again. */
+  private ref: { target: BenchTarget; entry: CatalogEntry; installedByUs: boolean; keep: boolean } | null = null;
+
+  constructor(private d: BenchDeps) {}
+
+  static idle(): BenchState {
+    return { running: false, phase: "idle", runDir: null, summaryFile: null, mode: "quick", modelIndex: 0, modelCount: 0, current: null, testIndex: 0, testCount: 0, currentTest: null, startedAt: null, rows: [], log: [], percent: 0, elapsedSec: 0, etaSec: null, series: [], currentTests: [], currentSizeGB: null, warmupLeftSec: null, phaseStartedAt: null, warmupPending: false };
+  }
+
+  state(): BenchState { return this.st; }
+  get running() { return this.st.running; }
+
+  private set(p: Partial<BenchState>) {
+    if (p.phase && p.phase !== this.st.phase && !canTransition("bench", this.st.phase, p.phase)) {
+      throw new Error(`the benchmark cannot move from ${this.st.phase} to ${p.phase}`);
+    }
+    this.st = { ...this.st, ...p, ...(p.phase && p.phase !== this.st.phase ? { phaseStartedAt: Date.now() } : {}) };
+    this.st = { ...this.st, ...this.progress(this.st) };
+    this.d.emit(this.st);
+  }
+
+  /** Percent done, time on the clock and time left. The time left is the time so far scaled by what remains, and the sizes before there is anything to scale. */
+  private progress(st: BenchState): Pick<BenchState, "percent" | "elapsedSec" | "etaSec"> {
+    const elapsedSec = st.startedAt ? Math.round((Date.now() - st.startedAt) / 1000) : 0;
+    if (!st.running) return { percent: st.phase === "done" ? 100 : st.percent, elapsedSec: st.running ? elapsedSec : st.elapsedSec, etaSec: null };
+    const w = this.weights;
+    const total = w.reduce((a, b) => a + b, 0) || 1;
+    const done = w.slice(0, Math.max(0, st.modelIndex - 1)).reduce((a, b) => a + b, 0);
+    const cur = w[st.modelIndex - 1] ?? 0;
+    const inTests = st.testCount ? Math.min(1, st.testIndex / st.testCount) : 0;
+    const frac = st.phase === "installing" ? 0.05 : st.phase === "loading" ? 0.1 : st.phase === "warming" ? 0.12 + 0.4 * (this.warmTotal ? 1 - (st.warmupLeftSec ?? 0) / this.warmTotal : 0) : st.phase === "placing" ? 0.55 : st.phase === "testing" ? 0.3 + 0.68 * inTests : st.phase === "removing" ? 0.99 : 0;
+    const p = Math.min(0.999, (done + cur * frac) / total);
+    const left = p >= 0.02 && elapsedSec >= 20 ? (elapsedSec * (1 - p)) / p : total * 60 * (1 - p);
+    return { percent: Math.round(p * 1000) / 10, elapsedSec, etaSec: Math.round(left) };
+  }
+  private log(line: string) {
+    this.set({ log: [...this.st.log, `${new Date().toLocaleTimeString()}  ${line}`].slice(-500) });
+  }
+
+  stop() {
+    if (!this.st.running) return;
+    this.ac?.abort();
+    if (this.entry) this.d.cancelInstall(this.entry);
+    this.log("Stopping…");
+  }
+
+  /** Starts the loop in the background; the state follows through `emit`. */
+  start(cfg: BenchConfig, roster: BenchTarget[]): void {
+    if (cfg.mode === "launch") cfg = { ...cfg, warmupMin: 0 }; // nothing to warm up for: no speed is compared across models
+    if (this.st.running) return;
+    const targets = cfg.keys.flatMap((k) => roster.find((t) => t.key === k) ?? []);
+    if (!targets.length) return;
+    fs.mkdirSync(this.d.root, { recursive: true });
+    const runDir = (cfg.resume && this.latestRun()) || path.join(this.d.root, stamp());
+    fs.mkdirSync(runDir, { recursive: true });
+    this.ac = new AbortController();
+    this.st = { ...BenchRunner.idle(), running: true, phase: "preparing", runDir, summaryFile: path.join(runDir, "summary.md"), mode: cfg.mode, modelCount: targets.length, startedAt: Date.now(), rows: this.rowsOf(runDir), phaseStartedAt: Date.now(), warmupPending: (cfg.warmupMin ?? 0) > 0 };
+    void this.d.machineInfo?.().then((m) => {
+      const mp = path.join(runDir, "machine.json");
+      // B04: resuming continues an old run — its machine metadata (chip, driver, versions
+      // at the time of the first models) is history too and is not overwritten by a
+      // later session's readings. A fresh run writes (or rewrites) its own.
+      if (cfg.resume && fs.existsSync(mp)) { this.log("Machine metadata of the first run kept (resume)."); return; }
+      fs.writeFileSync(mp, JSON.stringify(m));
+      this.log(`Machine: ${m.map(([k, v]) => `${k} ${v}`).join(" · ")}`);
+    }).catch(() => undefined);
+    this.warmDone = false; this.warmTotal = 0; this.warmSeries = []; this.refStartTps = null; this.ref = null;
+    this.runStartedAt = Date.now();
+    // the biggest model warms the NPU up, so it goes first and its warm-up is followed by its own tests on the same install
+    // among the models known to run here (the packs, the catalog) the biggest warms up; an untried architecture is not trusted with it
+    const known = (t: BenchTarget) => (t.source.startsWith("Dynamic") || t.source === "Catalog" ? 1 : 0);
+    if ((cfg.warmupMin ?? 0) > 0) targets.sort((a, b) => known(b) - known(a) || b.sizeGB - a.sizeGB);
+    this.weights = targets.map((t) => Math.max(0.1, estimateRun([{ sizeGB: t.sizeGB }], cfg.mode, testCosts(cfg.mode)).totalMin));
+    if ((cfg.warmupMin ?? 0) > 0 && this.weights.length) this.weights[0] += cfg.warmupMin!;
+    this.startMonitor();
+    this.set({});
+    void this.loop(cfg, targets, runDir).catch((e) => this.log(`Stopped by an error: ${(e as Error).message}`)).finally(() => {
+      this.entry = null;
+      this.stopMonitor();
+      this.set({ running: false, phase: this.ac?.signal.aborted ? "stopped" : "done", current: null, currentTest: null });
+      this.d.onRunEnd?.();
+    });
+  }
+
+  /** One sample a second of the CPU, the RAM, the NPU and the writing speed, kept for the graphs. The NPU counters take a second or two to read, so they are read every third sample, and not while the placement check reads them itself. */
+  private startMonitor() {
+    const cpus = this.d.cpus ?? os.cpus;
+    this.lastCpu = cpus();
+    this.lastNpu = { util: null, memGB: null };
+    let n = 0;
+    const t0 = Date.now();
+    this.monitor = setInterval(() => {
+      n++;
+      const now = cpus();
+      const cpu = this.lastCpu ? cpuBusy(this.lastCpu, now) : null;
+      this.lastCpu = now;
+      const ram = (this.d.ram ?? (() => ({ total: os.totalmem(), free: os.freemem() })))();
+      if (n % 3 === 1 && !this.probing && !this.placing && this.st.phase !== "installing") {
+        this.probing = true;
+        this.d.probe().then((x) => { this.lastNpu = x; }).catch(() => undefined).finally(() => { this.probing = false; });
+      }
+      const sample: BenchSample = {
+        t: Math.round((Date.now() - t0) / 100) / 10, cpu, ramPct: ram.total ? Math.round(((ram.total - ram.free) / ram.total) * 1000) / 10 : null,
+        npu: this.lastNpu.util, npuMemGB: this.lastNpu.memGB, tokPerSec: this.liveTps
+      };
+      this.set({ series: [...this.st.series, sample].slice(-180) });
+    }, this.d.monitorMs ?? 1000);
+  }
+  private stopMonitor() {
+    if (this.monitor) clearInterval(this.monitor);
+    this.monitor = null;
+    this.liveTps = null;
+  }
+
+  /**
+   * A reading that must carry the NPU memory. The frequent live samples may use the host's
+   * own sample (no PowerShell, no memory), but the memory-record points cannot: they read
+   * the dedicated memory probe when one is given.
+   */
+  private memProbe() {
+    return (this.d.probeMemory ?? this.d.probe)();
+  }
+
+  /** The models of this run that are finished, as written to their files. */
+  results(): ModelResult[] {
+    const dir = this.st.runDir ?? this.latestRun();
+    return dir ? this.readResults(dir).filter((r) => r.finishedAt && r.summary.ran > 0) : [];
+  }
+
+  /** Hands every finished model of the latest run to `measured` again: a completed report's results reach the Models list. */
+  importMeasured(): number {
+    // every finished model, launch checks included (they run no quality test): what was measured is decided by the writer
+    const dir = this.st.runDir ?? this.latestRun();
+    const done = dir ? this.readResults(dir).filter((r) => r.finishedAt) : [];
+    for (const r of done) { try { this.d.measured?.(r); } catch { /* skipped */ } }
+    return done.length;
+  }
+
+  /** Keys of the models tested to the end in any past run: the window leaves them unticked, so they are not run again for nothing. */
+  testedKeys(): Set<string> {
+    const done = new Set<string>();
+    try {
+      for (const e of fs.readdirSync(this.d.root, { withFileTypes: true })) {
+        if (e.isDirectory()) for (const r of this.readResults(path.join(this.d.root, e.name))) if (r.finishedAt && r.summary?.ran > 0 && !r.error) done.add(r.key);
+      }
+    } catch { /* no run yet */ }
+    return done;
+  }
+
+  private latestRun(): string | null {
+    try {
+      const names = fs.readdirSync(this.d.root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+      return names.length ? path.join(this.d.root, names[names.length - 1]) : null;
+    } catch { return null; }
+  }
+
+  private readResults(runDir: string): ModelResult[] {
+    try {
+      return fs.readdirSync(runDir).filter((f) => f.endsWith(".json") && f !== "summary.json" && !f.includes(".archive-"))
+        .flatMap((f) => { try { return [JSON.parse(fs.readFileSync(path.join(runDir, f), "utf8")) as ModelResult]; } catch { return []; } });
+    } catch { return []; }
+  }
+
+  private rowsOf(runDir: string): BenchRow[] {
+    return this.readResults(runDir).filter((r) => r.finishedAt).map((r) => this.row(r, path.join(runDir, `${slug(r.key)}.json`)));
+  }
+
+  private row(r: ModelResult, file: string): BenchRow {
+    return { key: r.key, name: r.name, sizeGB: r.sizeGB, quality: r.summary.quality, skipReason: r.error && !/^stopped/.test(r.error) ? r.skipReason : undefined, runsOn: r.placement?.runsOn ?? "unknown", bySection: r.summary.bySection, ttftSec: r.summary.ttftSec, tokPerSec: r.summary.tokPerSec, coldStartSec: r.coldStartSec, ran: r.summary.ran, failed: r.summary.failed, error: r.error, launched: r.launched, window: r.launch?.window, loadSetting: r.loadSetting, cpuBusyPct: r.placement?.cpuBusyPct ?? null, prefillTokPerSec: r.launch?.prefillTokPerSec ?? null, genWatts: r.launch?.energy?.genWatts ?? null, mWhPerToken: r.launch?.energy?.mWhPerToken ?? null, file };
+  }
+
+  private writeModel(runDir: string, r: ModelResult): string {
+    const base = path.join(runDir, slug(r.key));
+    r.summary = summarize(r.tests, r.planned ?? null);
+    if (r.launched) r.summary = { ...r.summary, tokPerSec: r.launch?.tokPerSec ?? null, ttftSec: r.launch?.ttftSec ?? null, tokPerSecEstimated: r.launch?.tokensEstimated ?? r.summary.tokPerSecEstimated };
+    fs.writeFileSync(`${base}.json`, JSON.stringify(r, null, 2));
+    fs.writeFileSync(`${base}.md`, buildModelReport(r));
+    return `${base}.json`;
+  }
+
+  private writeSummary(runDir: string, cfg: BenchConfig, startedAt: string) {
+    const all = this.readResults(runDir).filter((r) => r.finishedAt);
+    fs.writeFileSync(path.join(runDir, "summary.md"), buildReport(all, { startedAt, mode: cfg.mode, machine: this.d.machine }));
+    const sections = path.join(runDir, "sections");
+    fs.mkdirSync(sections, { recursive: true });
+    for (const sec of BENCH_SECTIONS) {
+      if (all.some((r) => r.summary.bySection[sec.id] !== undefined)) fs.writeFileSync(path.join(sections, `${sec.id}.md`), buildSectionReport(sec.id, all));
+    }
+    fs.writeFileSync(path.join(runDir, "summary.json"), JSON.stringify(all.map((r) => ({ key: r.key, name: r.name, sizeGB: r.sizeGB, ref: r.ref, ...r.summary, coldStartSec: r.coldStartSec, installSec: r.installSec, npuMemGB: r.npuMemGB })), null, 2));
+  }
+
+  /** A line for the log, from outside the run (what GenieX answers to --help, for instance). */
+  note(line: string) { this.log(line); }
+
+  /** After a server was stopped the NPU can keep memory for a while (2 to 3 GB were seen after a failed load): the next load starts on a NPU that is free, up to 30 s. */
+  private async waitNpuFree(signal: AbortSignal) {
+    if (this.d.loadRetryMs === 0) return;
+    const t0 = Date.now();
+    let mem: number | null = null;
+    while (!signal.aborted && Date.now() - t0 < (this.d.npuWaitMs ?? 30_000)) {
+      mem = (await this.memProbe().catch(() => ({ util: null, memGB: null }))).memGB;
+      if (mem === null || mem < 0.5) break;
+      await this.pause(1000, signal);
+    }
+    if (mem !== null && mem >= 0.5) {
+      this.log(`  the NPU still holds ${mem} GB after ${Math.round((this.d.npuWaitMs ?? 30_000) / 1000)} s.`);
+      // the cheap way first: a server left running that is not ours holds the memory most of the time
+      const closed = signal.aborted ? [] : await (this.d.closeStray?.() ?? Promise.resolve([])).catch(() => []);
+      if (closed.length) {
+        this.log(`  closed ${closed.length} server${closed.length === 1 ? "" : "s"} left running: ${closed.join(", ")}.`);
+        await this.pause(3000, signal);
+        mem = (await this.memProbe().catch(() => ({ util: null, memGB: null }))).memGB;
+      }
+    }
+    if (mem !== null && mem >= 0.5) {
+      if (!signal.aborted && (await this.d.canResetNpu?.().catch(() => false))) {
+        this.log("  resetting the NPU…");
+        const r = await this.d.resetNpu!().catch((e) => ({ ok: false, message: (e as Error).message }));
+        this.log(`  ${r.message}`);
+      }
+    }
+    else if (Date.now() - t0 > 2500) this.log(`  the NPU was free again after ${Math.round((Date.now() - t0) / 1000)} s.`);
+  }
+
+  private pause(ms: number, signal: AbortSignal) {
+    return new Promise<void>((res) => { const t = setTimeout(res, ms); signal.addEventListener("abort", () => { clearTimeout(t); res(); }, { once: true }); });
+  }
+
+  private async loop(cfg: BenchConfig, targets: BenchTarget[], runDir: string) {
+    const startedAt = new Date().toLocaleString();
+    const signal = this.ac!.signal;
+    let i = 0;
+    let noLoad = 0;
+    for (const t of targets) {
+      i++;
+      if (signal.aborted) break;
+      const file = path.join(runDir, `${slug(t.key)}.json`);
+      // B04: Resume skips only work this run actually COMPLETED under the SAME
+      // fingerprint — suite version, requested mode, artifact (repo + precision) and
+      // engine. A failed model (an error is recorded) must be retried; a finished
+      // launch check must not satisfy a Full run requested later; and a result of an
+      // older suite version (or another precision) is different work, redone.
+      const fingerprint = runFingerprint(t, cfg.mode);
+      const previous = this.readResults(runDir).find((r) => r.key === t.key && r.finishedAt && !r.error && r.mode === cfg.mode && r.fingerprint === fingerprint);
+      if (cfg.resume && previous) { this.log(`${t.name}: already tested in this run, skipped`); continue; }
+      const stale = this.readResults(runDir).find((r) => r.key === t.key && r.finishedAt && (r.error || r.mode !== cfg.mode || (r.fingerprint !== undefined && r.fingerprint !== fingerprint)));
+      if (cfg.resume && stale) {
+        const why = stale.error ? "the last result was a failure — retrying"
+          : stale.fingerprint !== undefined && stale.fingerprint !== fingerprint ? "the last result was of another suite version, mode or artifact — running the current one"
+          : `the last run of it was a ${stale.mode} check — running the ${cfg.mode} suite for it`;
+        this.log(`${t.name}: ${why}.`);
+      }
+      this.set({ modelIndex: i, current: t.name, testIndex: 0, currentTest: null, phase: "preparing", currentTests: [], currentSizeGB: t.sizeGB });
+      this.log(`— ${t.name} (${t.sizeGB.toFixed(1)} GB): looking it up…`);
+      // B04: a re-run under a DIFFERENT fingerprint (new suite version, other mode or
+      // artifact) supersedes the old result but does not erase it: the previous file is
+      // archived BEFORE the model runs (the runner writes partial results during the
+      // run, which would otherwise overwrite the old file first).
+      const prevFile = path.join(runDir, `${slug(t.key)}.json`);
+      if (fs.existsSync(prevFile)) {
+        try {
+          const prev = JSON.parse(fs.readFileSync(prevFile, "utf8")) as ModelResult;
+          if (prev.fingerprint !== fingerprint) {
+            // a fingerprint is "suite|mode|engine|repo|quant": only filename-safe
+            // characters may reach the archive's name (Windows rejects | / \ ...)
+            const suffix = (prev.fingerprint ?? "legacy").replace(/[^A-Za-z0-9._-]/g, "").slice(-12) || "legacy";
+            const archived = `${slug(t.key)}.archive-${suffix}.json`;
+            fs.renameSync(prevFile, path.join(runDir, archived));
+            this.log(`The previous result (${prev.fingerprint ?? "without a suite fingerprint"}) is kept as ${archived}.`);
+          }
+        } catch { /* the old file stays as it is */ }
+      }
+      const result = await this.model(cfg, t, runDir).catch((e): ModelResult => this.failed(t, cfg, (e as Error).message));
+      const written = this.writeModel(runDir, result);
+      try { this.d.measured?.(result); } catch { /* a profile that cannot be written never stops the run */ }
+      this.set({ rows: [...this.st.rows.filter((r) => r.key !== t.key), this.row(result, written)] });
+      this.writeSummary(runDir, cfg, startedAt);
+      this.log(`${t.name}: quality ${result.summary.quality === null ? "–" : result.summary.quality.toFixed(0)}/100${result.error ? `, ${result.error}` : ""}`);
+      // models that all refuse to load say something about the NPU (it can stay in a bad state after a failure), but the run goes on
+      noLoad = result.skipReason === "did not load" && !result.tests.length ? noLoad + 1 : 0;
+      if (noLoad === 3 && !signal.aborted && (await this.d.canResetNpu?.().catch(() => false))) {
+        this.log("3 models in a row did not load: resetting the NPU…");
+        const r = await this.d.resetNpu!().catch((e) => ({ ok: false, message: (e as Error).message }));
+        this.log(`  ${r.message}`);
+      } else if (noLoad === 3) this.log("3 models in a row did not load. If they usually load, the NPU may be in a bad state: stop the run, use Reset the NPU in Settings, Developer, then start again with resume.");
+    }
+    this.writeSummary(runDir, cfg, startedAt);
+    await this.finishReference(cfg, runDir, signal.aborted);
+    if (!signal.aborted) await this.exportReport(runDir).catch(() => undefined);
+  }
+
+  /**
+   * Writes the report to publish into `<run>/publish`: the Markdown and the HTML versions, the charts as SVG, a CSV of every figure,
+   * the statistics, and a copy of every model's and every section's file with the raw answers. Works on a run that is not finished.
+   * Returns the files ACTUALLY written (relative to the publish directory), so the UI never announces an artifact that does not exist (B12).
+   */
+  async exportReport(runDir?: string | null): Promise<{ dir: string; report: string; html: string; files: string[] } | null> {
+    const listDir = (root: string, prefix = ""): string[] => {
+      try {
+        return fs.readdirSync(root, { withFileTypes: true }).flatMap((e) =>
+          e.isDirectory() ? listDir(path.join(root, e.name), `${prefix}${e.name}/`) : [`${prefix}${e.name}`]);
+      } catch { return []; }
+    };
+    const dir = runDir ?? this.st.runDir ?? this.latestRun();
+    if (!dir) return null;
+    const results = this.readResults(dir).filter((r) => r.finishedAt);
+    let machine: [string, string][] = [];
+    try { machine = JSON.parse(fs.readFileSync(path.join(dir, "machine.json"), "utf8")); } catch { /* not recorded */ }
+    // a launch check has no quality to chart: one report, which models run and on what. Results of another mode in the same folder (a run
+    // resumed in it) do not stop it, and are not mixed into it.
+    const launchRes = results.filter((r) => r.mode === "launch");
+    const testRes = results.filter((r) => r.mode !== "launch");
+    let launchOut: { dir: string; report: string; html: string; files: string[] } | null = null;
+    if (launchRes.length) {
+      const pub = path.join(dir, "publish");
+      fs.mkdirSync(pub, { recursive: true });
+      const lr = buildLaunchReport(launchRes, { startedAt: path.basename(dir).replace("_", " "), machine });
+      fs.writeFileSync(path.join(pub, "launch.md"), lr.md);
+      fs.writeFileSync(path.join(pub, "launch.csv"), lr.csv);
+      // a Launch-only export makes exactly these two files — no HTML, no charts
+      launchOut = { dir: pub, report: path.join(pub, "launch.md"), html: path.join(pub, "launch.md"), files: ["launch.md", "launch.csv"] };
+      if (!testRes.some((r) => r.summary.ran > 0)) return launchOut;
+    }
+    results.splice(0, results.length, ...testRes);
+    if (!results.some((r) => r.summary.ran > 0)) return launchOut;
+    const mode = results[0].mode;
+    const out = path.join(dir, "publish");
+    fs.mkdirSync(path.join(out, "charts"), { recursive: true });
+    let warmup = null;
+    try { warmup = JSON.parse(fs.readFileSync(path.join(dir, "warmup.json"), "utf8")); } catch { /* no warm-up in this run */ }
+    const files = buildExport(results, { startedAt: path.basename(dir).replace("_", " "), mode, machine, tags: CANDIDATE_TAGS, warmup });
+    for (const [rel, text] of Object.entries(files)) fs.writeFileSync(path.join(out, rel), text);
+    for (const sub of ["models", "sections"]) fs.mkdirSync(path.join(out, sub), { recursive: true });
+    for (const f of fs.readdirSync(dir)) if (f.endsWith(".md") && f !== "summary.md") fs.copyFileSync(path.join(dir, f), path.join(out, "models", f));
+    try { for (const f of fs.readdirSync(path.join(dir, "sections"))) fs.copyFileSync(path.join(dir, "sections", f), path.join(out, "sections", f)); } catch { /* none */ }
+    return { dir: out, report: path.join(out, "report.md"), html: path.join(out, "report.html"), files: listDir(out) };
+  }
+
+  private failed(t: BenchTarget, cfg: BenchConfig, error: string): ModelResult {
+    return { key: t.key, name: t.name, ref: t.bundleRef ?? t.repo, sizeGB: t.sizeGB, paramsB: t.paramsB, source: t.source, thinking: "none", mode: cfg.mode, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), wasInstalled: false, inventoryKnown: true, ownedInstall: false, fingerprint: runFingerprint(t, cfg.mode), planned: testsFor(cfg.mode).length, installSec: null, coldStartSec: null, npuMemGB: null, tests: [], summary: summarize([]), error };
+  }
+
+  /** One model: install if needed, load, run the tests, remove. The removal happens whatever went wrong. */
+  private async model(cfg: BenchConfig, t: BenchTarget, runDir: string): Promise<ModelResult> {
+    const now = this.d.now ?? (() => performance.now());
+    const signal = this.ac!.signal;
+    let entry = await this.d.resolve(t);
+    this.entry = entry;
+    const r: ModelResult = { ...this.failed(t, cfg, ""), ref: entryRef(entry), thinking: thinkingSupport(entry), finishedAt: null };
+    delete r.error;
+    // Ownership of what is on the disk: wasInstalled says whether the model was there
+    // BEFORE this run (null = the inventory could not be read); ownedInstall says
+    // whether THIS run put a file there. Only ownedInstall ever allows removal.
+    const inv = await this.d.isInstalled(entry);
+    r.wasInstalled = inv === true;
+    r.inventoryKnown = inv !== null;
+    r.ownedInstall = false;
+    this.log(inv === true ? `${t.name} is already installed: no download.`
+      : inv === false ? `${t.name} is not installed: downloading ${t.sizeGB.toFixed(1)} GB.`
+      : `${t.name}: the installed-models list could not be read, so it is not known whether it is cached (the download below is duplicate-protected; nothing already on the disk will be removed).`);
+    const modelStart = Date.now();
+    const budgetMs = (this.d.modelBudgetMs ?? { launch: 5, express: 10, quick: 35, full: 80 }[cfg.mode] * 60_000) + (!this.warmDone ? (cfg.warmupMin ?? 0) * 60_000 : 0);
+    // True when the artifact ON THE DISK NOW is one THIS run downloaded (it stays owned
+    // through a failure, so a half download is cleaned up); null when the cache already
+    // had the artifact (alreadyInstalled) — a pre-existing model is never ours to remove.
+    // The ownership is bound to the CONCRETE artifact, not to a flag that outlives it:
+    // when a failed provider's file is removed the ownership is removed with it, so the
+    // next provider's cached file is never uninstalled as if this run had downloaded it.
+    // Declared out here: the finally block below must see it even when the try throws early.
+    let ownedEntry: CatalogEntry | null = null;
+    try {
+      // A model that will not install or load from one provider often does from another (same file, other quantiser): try each in turn.
+      const repos = [t.repo, ...(t.altRepos ?? []).filter((x) => x !== t.repo)];
+      let laddered = false;
+      let launchStats: LaunchStats | null = null;
+      let installedRepo: string | null = null; // the provider whose file is on the disk now: a retry does not download it again
+      let cleanedOnce = false;
+      let srv!: { endpoint: string; nctx: number; model?: string; backend?: string; contextKind?: "compiled" | "configurable" | null };
+      let baseline!: { util: number | null; memGB: number | null };
+      let t1 = 0;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (attempt > 0) {
+            entry = await this.d.resolve({ ...t, repo: repos[attempt], entryId: undefined });
+            this.entry = entry;
+            r.ref = entryRef(entry);
+            const inv = await this.d.isInstalled(entry);
+            r.wasInstalled = inv === true;
+            r.inventoryKnown = inv !== null;
+            this.log(`Trying ${t.name} from ${repos[attempt]} (provider ${attempt + 1} of ${repos.length}).`);
+          }
+          r.repo = repos[attempt];
+          r.triedRepos = repos.slice(0, attempt + 1);
+          if (!r.wasInstalled && installedRepo !== repos[attempt]) {
+            const free = this.d.freeDiskGB();
+            if (free !== null && free < entry.sizeGB * 1.15) throw new Error(`not enough disk space (${free.toFixed(1)} GB free, ${(entry.sizeGB * 1.15).toFixed(1)} GB needed)`);
+            this.set({ phase: "installing" });
+            this.log(`Installing ${t.name}…`);
+            const t0 = now();
+            /* the download cannot be cancelled deep inside, but a stopped run must not wait for it to finish */
+            const ins = await Promise.race([
+              this.d.install(entry),
+              new Promise<never>((_, rej) => signal.addEventListener("abort", () => rej(new Error("stopped")), { once: true }))
+            ]);
+            if (signal.aborted) throw new Error("stopped");
+            if (!ins.ok) throw new Error(`install failed: ${ins.error ?? "unknown"}`);
+            if (ins.alreadyInstalled) {
+              // The cache already had this artifact: it predates the run, whatever the
+              // earlier inventory check said. The run owns nothing here — cleanup must
+              // never uninstall a pre-existing model.
+              r.wasInstalled = true;
+              r.inventoryKnown = true;
+            } else {
+              ownedEntry = entry;
+            }
+            installedRepo = repos[attempt];
+            r.installSec = Math.round((now() - t0) / 100) / 10;
+            this.log(`${t.name} downloaded in ${Math.round(r.installSec)} s.`);
+          }
+          this.set({ phase: "loading" });
+          this.log(`Loading ${t.name} onto the ${this.d.compute().toUpperCase()}: a big model can take a minute or two.`);
+          const plan = await this.d.describe?.(entry).catch(() => "");
+          if (plan) this.log(`  plan: ${plan}`);
+          baseline = await this.memProbe().catch(() => ({ util: null, memGB: null })); // before this model is on the NPU
+          t1 = now();
+          const load = async (setting?: LoadSetting) => {
+            const s = await this.within(this.d.start(entry, setting), 180_000, "the model server did not start in 3 minutes");
+            if (signal.aborted) throw new Error("stopped"); // the server came up after the run was stopped: it is stopped in the finally below
+            // B03: the SERVED identity, recorded for every attempt — requests are named
+            // with the model the server reports (its spelling of the artifact), and the
+            // window quoted everywhere is the one it actually serves, never the
+            // catalog's recommendation. A fallback attempt overwrites these with what
+            // it really got.
+            r.servedModel = s.model;
+            r.servedContext = s.nctx;
+            r.contextKind = s.contextKind ?? null;
+            // the engine is a fact of the entry (a host answered "geniex" for every start, Foundry Local included)
+            r.backend = this.engineOf(entry);
+            const ask = (messages: BenchTest["messages"], maxTokens: number, timeoutMs = 240_000) =>
+              this.ask(entry, s.endpoint, messages, maxTokens, null, signal, timeoutMs, undefined, s.model);
+            await ask([{ role: "user", content: "Say OK." }], 12);
+            // a real prompt: some models load and answer one word, then stop the NPU as soon as they read more
+            const real = await ask([{ role: "user", content: prefillPrompt(s.nctx) }], 16);
+            // a thinking model spends its first tokens thinking: with a short limit its visible answer is empty although it generated, and the
+            // server log says so. That is an answer, not noise; only text that is noise, or nothing at all generated, fails the check.
+            const text = `${real.answer}${real.thinking ?? ""}`;
+            const generated = real.stats?.tokens ?? 0;
+            const hidden = !text.trim() && generated >= 8;
+            if (hidden) this.log(`  ${t.name}: no visible text, but ${generated} tokens were generated (a thinking model spends the first tokens thinking): counted as answered.`);
+            if (!hidden && looksGarbled(text)) throw new Error(`the model loaded but answered with garbage on a real prompt (${text.trim() ? `it wrote: «${text.trim().slice(0, 100).replace(/\s+/g, " ")}»` : "it wrote nothing"}, ${generated} tokens generated, window ${s.nctx}, prompt about ${Math.round(prefillPrompt(s.nctx).length / 3.5)} tokens)`);
+            // the answer to the long prompt is a word or two, too short to time the writing: a short text is asked for its speed (a failure here is not a failure to launch)
+            let tokPerSec = real.stats?.tokPerSec ?? null;
+            // the prompt read per second: the long prompt over the time to the first token (the prompt's length is the server's when it says it;
+            // only the part it really evaluated counts, since GenieX 0.11.0 includes a reused cache prefix in prompt_tokens)
+            const longPrompt = prefillPrompt(s.nctx);
+            const promptTokens = (real.stats ? evaluatedPromptTokens(real.stats) : undefined) ?? Math.round(longPrompt.length / 3.5);
+            const ttft = real.stats?.ttftSec ?? null;
+            const prefillTokPerSec = ttft && ttft >= 0.2 && promptTokens >= 128 ? Math.round(promptTokens / ttft) : null;
+            // the energy of a token: the PC at rest with the model loaded, then while it writes a longer text (the battery's draw is read about once a second)
+            const probeEnergy = this.d.battery ? await this.d.battery().catch(() => null) : null;
+            const metered = !!probeEnergy?.present && !probeEnergy.onMains;
+            let energy: Energy | null = null;
+            // B13: whether the tok/s of the launch check rests on the server's verified
+            // token usage or on stream-chunk counts (an estimate).
+            let tokEstimated = true;
+            try {
+              const rest: BatteryReading[] = [];
+              if (metered) for (let i = 0; i < 3 && !signal.aborted; i++) { const b = await this.d.battery!().catch(() => null); if (b) rest.push(b); await new Promise((r) => setTimeout(r, 700)); }
+              const gen: BatteryReading[] = [];
+              let go = metered;
+              const poll = (async () => { while (go) { const b = await this.d.battery!().catch(() => null); if (b) gen.push(b); await new Promise((r) => setTimeout(r, 300)); } })();
+              try {
+                const speed = await ask([{ role: "user", content: metered ? "Write about 250 words on why the sky is blue and the sunset is red." : "Write about 80 words on why the sky is blue." }], metered ? 384 : 96, 120_000);
+                if (speed.stats?.tokPerSec) tokPerSec = speed.stats.tokPerSec;
+                if (speed.stats) tokEstimated = !!speed.stats.tokensEstimated;
+              } finally { go = false; await poll; }
+              if (metered) energy = energyPerToken(rest, gen, tokPerSec, { minDurationSec: 10 }); // a few seconds of writing say nothing about the draw of a token
+            } catch (e2) { if (signal.aborted) throw e2; this.log(`  ${t.name}: its writing speed could not be timed (${(e2 as Error).message.slice(0, 120)}).`); }
+            if (energy) this.log(`  ${t.name}: ${energy.mWhPerToken !== null ? `${energy.mWhPerToken} mWh per token (${energy.genWatts} W writing, ${energy.restWatts} W at rest)` : `energy not measured: ${energy.problem}`}.`);
+            launchStats = { tokPerSec, ttftSec: ttft, window: s.nctx, prefillTokPerSec, prefillEstimated: !real.stats?.promptTokens, tokensEstimated: tokEstimated, energy };
+            r.power = probeEnergy?.present ? (probeEnergy.onMains ? "mains" : "battery") : "unknown";
+            return s;
+          };
+          try { srv = await load(); } catch (e) {
+            if (!signal.aborted && !laddered && mappingFailed(this.d.serverLog())) {
+              // the NPU could not map the memory of the model and its window: the provider is not the problem. The settings that cost the model
+              // least are tried first, and the first that works is kept, so the app starts this model that way from now on.
+              laddered = true;
+              let last: unknown = e;
+              for (const setting of ladder(this.d.allowHybrid?.() ?? false)) {
+                this.log(`${t.name}: the NPU could not map its memory (fastrpc_mmap). Trying: ${setting.label}${setting.env ? ` [${Object.entries(setting.env).map(([k, v]) => `${k}=${v}`).join(" ")}]` : ""}.`);
+                await this.d.stopServer().catch(() => undefined);
+                await this.waitNpuFree(signal);
+                await this.pause(this.d.loadRetryMs ?? 8000, signal);
+                if (signal.aborted) throw new Error("stopped"); // the pause is cut short by a stop: no new load may be started
+                try {
+                  srv = await load(setting); last = null;
+                  r.loadSetting = setting.label;
+                  this.log(`${t.name} loaded with: ${setting.label} (window ${srv.nctx} tokens). The app will start it that way.`);
+                  this.d.remember?.(entry, setting);
+                  break;
+                } catch (e2) {
+                  last = e2;
+                  this.log(`  failed: ${failureSummary((e2 as Error).message, this.d.serverLog())}`);
+                  if (signal.aborted) break;
+                }
+              }
+              if (last) throw last;
+            } else {
+            // on the last provider (the others are tried first), the NPU may still hold the memory of a model that was just taken off it: give it a moment, then try once more
+            if (signal.aborted || attempt < repos.length - 1 || !/loading failed|-100201|SDKError/i.test((e as Error).message)) throw e;
+            this.log(`${t.name} did not load (${(e as Error).message.slice(0, 100)}): the NPU is given a few seconds, then one more try.`);
+            await this.d.stopServer().catch(() => undefined);
+            await this.pause(this.d.loadRetryMs ?? 8000, signal);
+            if (signal.aborted) throw new Error("stopped");
+            srv = await load();
+            }
+          }
+          r.coldStartSec = Math.round((now() - t1) / 100) / 10;
+          break;
+        } catch (e) {
+          const msg = (e as Error).message;
+          const cls = classifyFailure(msg);
+          if (signal.aborted || !/^(download failed|did not load)$/.test(cls)) throw e;
+          const ram = (this.d.ram ?? (() => ({ total: os.totalmem(), free: os.freemem() })))();
+          const kind = cls === "download failed" ? "file" : failureKind(msg, this.d.serverLog(), ram.free / 1024 ** 3);
+          // a crash, a refused buffer or a full RAM are not the file's fault: the NPU is cleaned and the same file is tried once more, without downloading anything
+          if (kind === "environment" && !cleanedOnce) {
+            cleanedOnce = true;
+            this.log(`${t.name} did not load (${failureSummary(msg, this.d.serverLog())}). That does not come from the file, so it is not downloaded again from another provider: the NPU is cleaned and the same file is tried once more.`);
+            await this.d.stopServer().catch(() => undefined);
+            await this.waitNpuFree(signal);
+            if (await this.d.canResetNpu?.().catch(() => false)) {
+              const rs = await this.d.resetNpu!().catch((x) => ({ ok: false, message: (x as Error).message }));
+              this.log(`  ${rs.message}`);
+            }
+            attempt--;
+            continue;
+          }
+          // another provider only when it can help: a problem of the file, or an unexplained failure (one other provider at most)
+          const more = attempt < repos.length - 1 && (kind === "file" || (kind === "unknown" && attempt === 0));
+          if (!more) {
+            if (attempt < repos.length - 1) this.log(`${t.name}: ${failureSummary(msg, this.d.serverLog())}. The other providers are not tried: that does not come from the file.`);
+            throw e;
+          }
+          this.log(`${t.name} from ${repos[attempt]} failed (${msg.slice(0, 120)}): trying the next provider.`);
+          await this.d.stopServer().catch(() => undefined);
+          // only what this run downloaded is removed between providers — and with it,
+          // the ownership: the next provider's file (cached or downloaded) must stand
+          // on its own evidence from here on
+          if (ownedEntry !== null) {
+            await this.d.uninstall(entry).catch(() => undefined);
+            ownedEntry = null;
+          }
+        }
+      }
+      this.log(`${t.name} answered after ${r.coldStartSec} s.`);
+      const loaded = await this.memProbe().catch(() => ({ util: null, memGB: null }));
+      r.npuMemGB = loaded.memGB;
+      if (loaded.memGB !== null && baseline.memGB !== null) {
+        const used = Math.round((loaded.memGB - baseline.memGB) * 100) / 100;
+        this.log(`  NPU memory: grew by ${used} GB for a ${entry.sizeGB.toFixed(1)} GB file${entry.sizeGB > 0 ? ` (${(used / entry.sizeGB).toFixed(1)}x)` : ""}, window ${srv.nctx} tokens.`);
+      }
+      if ((cfg.warmupMin ?? 0) > 0 && !this.warmDone) {
+        this.ref = { target: t, entry, installedByUs: ownedEntry !== null, keep: cfg.keepInstalled };
+        await this.warmup(entry, srv, cfg.warmupMin!, t, runDir, signal);
+      }
+      this.set({ phase: "placing" });
+      this.log("Checking whether it runs on the NPU or the CPU…");
+      r.placement = await this.place(entry, srv, baseline.memGB, loaded.memGB, signal, cfg.mode === "express" || cfg.mode === "launch");
+      this.d.placed?.(entry, r.placement.runsOn);
+      this.log(`${t.name}: runs on ${r.placement.runsOn.toUpperCase()} (${r.placement.evidence.join("; ")})`);
+
+      // B10: the controlled speed measurement — one fixed prompt, greedy and seeded,
+      // repeated after a warm-up write, its context and cache state recorded — is a
+      // separate track from the quality tests, and runs before them.
+      if (cfg.mode !== "launch") {
+        this.set({ phase: "testing", currentTest: "Fixed-workload speed measurement" });
+        r.speedTrack = await this.speedTrack(entry, srv, signal);
+        if (r.speedTrack.medianTokPerSec !== null) {
+          this.log(`  fixed-workload speed: ${r.speedTrack.medianTokPerSec} tokens/s median over the measured repetitions${r.speedTrack.spreadPct !== null ? ` (spread ${r.speedTrack.spreadPct}%)` : ""}${r.speedTrack.note ? ` — ${r.speedTrack.note}` : ""}.`);
+        } else this.log(`  fixed-workload speed: not measured${r.speedTrack.note ? ` (${r.speedTrack.note})` : ""}.`);
+      }
+
+      r.runOffsetMin = Math.round((Date.now() - this.runStartedAt) / 600) / 100;
+      const tests = testsFor(cfg.mode);
+      if (tests.length) this.set({ phase: "testing", testCount: tests.length }); // a launch check has no tests
+      let streak = 0;
+      let k = 0;
+      for (const test of tests) {
+        if (signal.aborted) throw new Error("stopped");
+        if (Date.now() - modelStart > budgetMs) throw new Error(`time budget of ${Math.round(budgetMs / 60000)} minutes reached after ${r.tests.length} of ${tests.length} tests`);
+        this.set({ testIndex: ++k, currentTest: test.title });
+        const res = test.minContext && srv.nctx < test.minContext
+          ? this.skipped(test, `window too small (${srv.nctx} tokens, needs ${test.minContext})`)
+          : await this.test(entry, srv, test, signal, cfg.mode === "express");
+        r.tests.push(res);
+        this.set({ currentTests: [...this.st.currentTests, { id: res.id, title: res.title, section: res.section, score: res.score, note: res.skipped ?? res.error ?? res.note, ttftSec: res.ttftSec, tokPerSec: res.tokPerSec, skipped: !!res.skipped, error: !!res.error }] });
+        if (res.error) streak++; else streak = 0;
+        if (streak >= 3) throw new Error(`three tests in a row failed: ${res.error}`);
+        const speeds = r.tests.map((x) => x.tokPerSec).filter((x): x is number => !!x && x > 0).sort((a, b) => a - b);
+        if (speeds.length >= 2 && speeds[Math.floor(speeds.length / 2)] < (this.d.minTokPerSec ?? 1.2)) throw new Error(`too slow: about ${speeds[Math.floor(speeds.length / 2)]} tokens per second, a full run would take hours`);
+        if (res.error) await this.d.start(entry).then((s) => { srv.endpoint = s.endpoint; srv.nctx = s.nctx; srv.model = s.model; }).catch(() => undefined); // the server may have died
+        this.writeModel(runDir, r); // partial results survive a crash
+      }
+      if (cfg.mode === "launch") {
+        // the launch check ends here: the model loaded, read a real prompt and answered
+        r.launched = true;
+        r.launch = launchStats ?? { tokPerSec: null, ttftSec: null, window: srv.nctx };
+        this.log(`${t.name} launches${r.launch.tokPerSec ? `: ${r.launch.tokPerSec} tokens/s` : ""}, window ${srv.nctx}${r.loadSetting ? `, with ${r.loadSetting}` : ""}.`);
+      } else if (!r.tests.some((x) => !x.skipped)) throw new Error("no test could run");
+    } catch (e) {
+      const msg = (e as Error).message;
+      r.error = signal.aborted ? "stopped before the end" : msg;
+      if (!signal.aborted) { r.skipReason = classifyFailure(msg); this.log(`${t.name} is ${r.tests.some((x) => !x.skipped) ? "tested in part" : "skipped"}: ${r.skipReason}. ${msg.slice(0, 160)}`);
+        // the error code is only a wrapper: the reason is in the lines the server wrote just before it
+        if (r.skipReason === "did not load" || r.skipReason === "failed") {
+          this.log(`  full error: ${msg}`);
+          const now2 = await this.memProbe().catch(() => ({ util: null, memGB: null }));
+          const ram = (this.d.ram ?? (() => ({ total: os.totalmem(), free: os.freemem() })))();
+          this.log(`  RAM at the failure: ${(ram.free / 1024 ** 3).toFixed(1)} GB free of ${(ram.total / 1024 ** 3).toFixed(1)} GB${ram.total && ram.free / ram.total < 0.1 ? " (almost full: the NPU works in the RAM, so loads fail)" : ""}.`);
+          this.log(`  at the failure: NPU memory in use ${now2.memGB ?? "unknown"} GB, ${entry.sizeGB.toFixed(1)} GB file, provider ${r.repo ?? t.repo}${r.triedRepos && r.triedRepos.length > 1 ? ` (tried: ${r.triedRepos.join(", ")})` : ""}.`);
+          const reason = serverReason(this.d.serverLog());
+          const key = reason.filter((l) => /\b(ERR|WRN)\b|panic|fatal|error|failed/i.test(l) && !/\[GIN\]/.test(l)).slice(-4);
+          if (key.length) this.log(`  cause: ${key.map((l) => l.replace(/^.*?\[ML\]\s*(\[[^\]]*\]\s*)*/, "").slice(0, 200)).join(" | ")}`);
+          for (const l of reason) this.log(`  server: ${l.slice(0, 300)}`);
+          for (const l of await (this.d.diagnose?.(entry) ?? Promise.resolve([])).catch(() => [])) this.log(`  ${l.slice(0, 1500)}`);
+        }
+      }
+    } finally {
+      r.finishedAt = signal.aborted && r.tests.length === 0 ? null : new Date().toISOString();
+      // Record the ownership this run held, so the report can be audited: the flag is
+      // read from the artifact-bound ownership, never from a value that a provider
+      // change could have left behind.
+      r.ownedInstall = ownedEntry !== null;
+      await this.d.stopServer().catch(() => undefined);
+      await this.waitNpuFree(signal);
+      if (ownedEntry !== null && this.ref?.target.key === t.key && !cfg.keepInstalled && !signal.aborted) {
+        // kept until the end of the run: its speed is measured again then, to see whether the NPU slowed down
+      } else if (ownedEntry !== null) {
+        if (cfg.keepInstalled && r.installSec !== null && !r.error?.startsWith("install failed")) this.d.keep(entry, t);
+        else {
+          this.set({ phase: "removing" });
+          this.log(`Removing ${t.name} to free the space…`);
+          const u = await this.d.uninstall(entry).catch((e) => ({ ok: false, message: (e as Error).message }));
+          if (!u.ok) this.log(`Could not remove ${t.name}: ${u.message}`);
+          ownedEntry = null;
+        }
+      } else if (!r.wasInstalled && !r.inventoryKnown && !signal.aborted) {
+        // Inventory was unreadable and this run provably downloaded nothing: destruction
+        // is refused on uncertainty, whatever the cleanup setting says.
+        this.log(`${t.name}: leaving the cache untouched — it could not be established what this run installed.`);
+      }
+    }
+    const refused = this.refused.get(this.engineOf(entry));
+    if (refused?.size) r.refused = [...refused];
+    return r;
+  }
+
+  /**
+   * Keeps the NPU busy, writing without a pause, for `minutes`, on the biggest model of the run, so the first model measured is not
+   * measured on a cold chip while the last is measured on a tired one. Windows gives no temperature for the NPU (Task Manager shows N/D),
+   * so the effect is read in the speed: it is sampled through the warm-up, and again with the same short request just after it and at the end of the run.
+   */
+  private async warmup(entry: CatalogEntry, srv: { endpoint: string; model?: string }, minutes: number, t: BenchTarget, runDir: string, signal: AbortSignal) {
+    const total = Math.max(1, Math.round(minutes * 60));
+    this.warmTotal = total;
+    const end = Date.now() + total * 1000;
+    const topics = ["the history of the lighthouse", "how bread is made, step by step", "the future of public transport in cities", "a day in the life of a market trader", "how the human heart works", "the rules and the history of chess", "a long travel diary through the Alps", "how electricity reaches a house"];
+    this.set({ phase: "warming", warmupLeftSec: total });
+    this.log(`Warming the NPU up for ${minutes} minute${minutes === 1 ? "" : "s"} on ${t.name}: it writes without stopping.`);
+    this.warmSeries = [];
+    let lastSet = 0, failures = 0, i = 0;
+    while (Date.now() < end && !signal.aborted && failures < 3) {
+      const live: BenchLive = { model: entry.name, testId: "warmup", test: "Warming up the NPU", section: "chat", prompt: `An essay about ${topics[i % topics.length]}, to keep the NPU busy.`, answer: "", thinking: "", tokens: 0, tokensEstimated: true, ttftSec: null, tokPerSec: null, elapsedSec: 0, done: false, warmup: true };
+      const t0 = performance.now();
+      let lastEmit = 0;
+      try {
+        const out = await this.ask(entry, srv.endpoint, [{ role: "user", content: `Write a very long, detailed, flowing essay about ${topics[i++ % topics.length]}. Keep writing, do not summarise and do not stop early.` }], 1200, effectiveEffort("off", thinkingSupport(entry)), signal, Math.max(3000, end - Date.now() + 2000), (kind, text, st) => {
+          if (kind === "answer") live.answer = (live.answer + text).slice(-4000); else live.thinking = (live.thinking + text).slice(-1500);
+          live.tokens = st.chunks; live.tokensEstimated = true; live.ttftSec = st.ttftSec; live.tokPerSec = st.tps; this.liveTps = st.tps;
+          const now = performance.now();
+          live.elapsedSec = Math.round((now - t0) / 100) / 10;
+          if (now - lastEmit > 120) { lastEmit = now; this.d.emitLive?.({ ...live }); }
+          if (now - lastSet > 900) { lastSet = now; this.set({ warmupLeftSec: Math.max(0, Math.ceil((end - Date.now()) / 1000)) }); }
+        }, srv.model);
+        failures = 0;
+        this.warmSeries.push({ t: Math.round(((Date.now() - (end - total * 1000)) / 60000) * 10) / 10, tps: out.stats?.tokPerSec ?? null });
+      } catch (e) {
+        const m = (e as Error).message;
+        if (m === "stopped") throw e;
+        if (m.startsWith("no answer after")) break; // the time is up in the middle of an essay
+        failures++;
+      }
+      this.liveTps = null;
+    }
+    this.liveTps = null;
+    this.set({ warmupLeftSec: null });
+    if (signal.aborted) throw new Error("stopped");
+    if (!this.warmSeries.length && Date.now() < end - 2000) {
+      // it could not write: this model is skipped and the next one will try to warm the NPU up
+      this.ref = null;
+      throw new Error("did not answer during the warm-up");
+    }
+    this.warmDone = true;
+    this.set({ warmupPending: false });
+    this.refStartTps = await this.speedProbe(entry, srv.endpoint, signal, srv.model);
+    this.log(`Warm-up over. Reference speed right after it: ${this.refStartTps === null ? "not measured" : `${this.refStartTps} tokens/s`}.`);
+    this.writeWarmup(runDir, { minutes, model: t.name, series: this.warmSeries, startTps: this.refStartTps, endTps: null });
+  }
+
+  /** A promise that gives up after `ms`, or as soon as the run is stopped: a server that never comes up must not hold the run. */
+  private within<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    let lost = false;
+    const seq = ++this.startSeq; // the attempt this start belongs to: a newer start (a retry) owns the server from then on
+    const signal = this.ac?.signal;
+    return Promise.race([
+      p,
+      new Promise<never>((_, rej) => {
+        timer = setTimeout(() => { lost = true; rej(new Error(msg)); }, ms);
+        signal?.addEventListener("abort", () => { lost = true; rej(new Error("stopped")); }, { once: true });
+      })
+    ]).finally(() => {
+      clearTimeout(timer);
+      if (lost) {
+        // the race gave up on the startup, but the start itself cannot be cancelled: a server that comes up late
+        // must not be left holding the NPU and RAM after a stop (it is stopped as soon as it exists). A newer
+        // start (the retry ladder) owns the server by then, so its attempt number decides.
+        void p.then(
+          () => { if (this.ac?.signal.aborted && this.startSeq === seq) void this.d.stopServer().catch(() => undefined); },
+          () => undefined
+        );
+      }
+    });
+  }
+
+  /** The same short request every time: how fast the model writes right now. */
+  private async speedProbe(entry: CatalogEntry, endpoint: string, signal: AbortSignal, model?: string): Promise<number | null> {
+    try {
+      const r = await this.ask(entry, endpoint, [{ role: "user", content: "Write the numbers from 1 to 120 separated by commas, and nothing else." }], 200, effectiveEffort("off", thinkingSupport(entry)), signal, 90_000, undefined, model);
+      return r.stats?.tokPerSec ?? null;
+    } catch (e) {
+      if ((e as Error).message === "stopped") throw e;
+      return null;
+    }
+  }
+
+  /**
+   * B10: the fixed-workload speed track — one warm-up write, then measured repetitions of
+   * the SAME prompt with FIXED sampling (greedy, seeded) and a fixed output budget, on the
+   * server's actual window. Only the server's verified token usage becomes a measured
+   * repetition; a chunk-derived rate is kept but flagged, and the median rests on the
+   * verified ones. This is the controlled raw-throughput figure; the quality tests'
+   * speeds measure real application tasks and stay apart.
+   */
+  private async speedTrack(entry: CatalogEntry, srv: { endpoint: string; nctx: number; model?: string }, signal: AbortSignal): Promise<SpeedTrack> {
+    const prompt = "Write the numbers from 1 to 120 separated by commas, and nothing else.";
+    const maxTokens = 256;
+    const sampling = { temperature: 0, top_p: 1, seed: 42 };
+    const reps: SpeedRep[] = [];
+    const track: SpeedTrack = { prompt, maxTokens, sampling, context: srv.nctx, reps, medianTokPerSec: null, spreadPct: null };
+    try {
+      for (let i = 0; i <= 3; i++) {
+        if (signal.aborted) break;
+        try {
+          const out = await this.ask(entry, srv.endpoint, [{ role: "user", content: prompt }], maxTokens, effectiveEffort("off", thinkingSupport(entry)), signal, 120_000, undefined, srv.model, sampling);
+          const st = out.stats;
+          reps.push({
+            i, cacheState: i <= 1 ? "cold" : "warm",
+            tokens: st?.tokens ?? 0, tokensEstimated: st ? !!st.tokensEstimated : true,
+            ttftSec: st?.ttftSec ?? null, tokPerSec: st?.tokPerSec ?? null, totalSec: st?.totalSec ?? 0
+          });
+        } catch (e) {
+          if ((e as Error).message === "stopped") throw e;
+          reps.push({ i, cacheState: i <= 1 ? "cold" : "warm", tokens: 0, tokensEstimated: true, ttftSec: null, tokPerSec: null, totalSec: 0 });
+          track.note = `repetition ${i} failed: ${(e as Error).message.slice(0, 120)}`;
+          break;
+        }
+      }
+      const warm = reps.filter((x) => x.cacheState === "warm");
+      const verified = warm.filter((x) => !x.tokensEstimated && x.tokPerSec !== null);
+      const pool = (verified.length ? verified : warm.filter((x) => x.tokPerSec !== null)).map((x) => x.tokPerSec!);
+      if (reps.length && reps.every((x) => x.i === 0)) track.note = "the warm-up write succeeded but no repetition completed";
+      else if (!verified.length && pool.length) track.note = "the server sent no token usage: the figures count stream chunks (estimated)";
+      else if (pool.length < 2) track.note = track.note ?? "fewer than two measured repetitions: the median is indicative only";
+      if (pool.length) {
+        track.medianTokPerSec = Math.round((pool.sort((a, b) => a - b)[Math.floor((pool.length - 1) / 2)] ?? 0) * 10) / 10;
+        track.spreadPct = pool.length >= 2 && track.medianTokPerSec > 0 ? Math.round(((Math.max(...pool) - Math.min(...pool)) / track.medianTokPerSec) * 1000) / 10 : null;
+      }
+    } catch (e) {
+      if ((e as Error).message === "stopped") throw e;
+      track.note = `the measurement did not run: ${(e as Error).message.slice(0, 120)}`;
+    }
+    return track;
+  }
+
+  private writeWarmup(runDir: string, w: { minutes: number; model: string; series: { t: number; tps: number | null }[]; startTps: number | null; endTps: number | null }) {
+    try { fs.writeFileSync(path.join(runDir, "warmup.json"), JSON.stringify(w, null, 2)); } catch { /* not kept */ }
+  }
+
+  /** At the end of the run: the warm-up model writes the same short text again, to show whether the NPU slowed down, and is removed if it was only there for the run. */
+  private async finishReference(cfg: BenchConfig, runDir: string, aborted: boolean) {
+    const ref = this.ref;
+    if (!ref) return;
+    this.ref = null;
+    try {
+      if (!aborted && this.refStartTps !== null) {
+        this.set({ phase: "rechecking", current: ref.target.name, currentTest: "Same speed test as after the warm-up", testIndex: 0, testCount: 0 });
+        this.log(`Measuring ${ref.target.name} again to see whether the NPU slowed down during the run…`);
+        const srv = await this.d.start(ref.entry);
+        const endTps = await this.speedProbe(ref.entry, srv.endpoint, this.ac!.signal, srv.model);
+        let w: { minutes: number; model: string; series: { t: number; tps: number | null }[]; startTps: number | null; endTps: number | null } | null = null;
+        try { w = JSON.parse(fs.readFileSync(path.join(runDir, "warmup.json"), "utf8")); } catch { /* none */ }
+        if (w) this.writeWarmup(runDir, { ...w, endTps });
+        this.log(`Speed at the end: ${endTps === null ? "not measured" : `${endTps} tokens/s`} (after the warm-up: ${this.refStartTps} tokens/s).`);
+      }
+    } catch { /* the check is a bonus: a failure must not lose the results */ } finally {
+      await this.d.stopServer().catch(() => undefined);
+      if (ref.installedByUs && !ref.keep) {
+        this.set({ phase: "removing" });
+        await this.d.uninstall(ref.entry).catch(() => undefined);
+      } else if (ref.installedByUs && ref.keep) this.d.keep(ref.entry, ref.target);
+    }
+  }
+
+  /** Generates a short text while watching the NPU counters and the CPU, then judges where the model ran. */
+  private async place(entry: CatalogEntry, srv: { endpoint: string; model?: string }, baseMem: number | null, loadedMem: number | null, signal: AbortSignal, express: boolean) {
+    let peakMem = loadedMem;
+    this.placing = true;
+    // utilization from the cheap probe; the memory probe (a process per read) at most
+    // every 5 s: the poll runs during the load the benchmark is timing
+    const poll = pollPlacement(
+      () => this.d.probe(),
+      this.d.probeMemory ? () => this.memProbe() : null,
+      (x) => { this.lastNpu = x; },
+      { shouldRun: () => this.placing }
+    );
+    const cpus = this.d.cpus ?? os.cpus;
+    const cpu0 = cpus();
+    let out: { answer: string; thinking: string; stats: ChatStats | null } | null = null;
+    try {
+      out = await this.ask(entry, srv.endpoint, [{ role: "user", content: "Write a 150-word story about a lighthouse keeper." }], express ? 70 : 220, effectiveEffort("off", thinkingSupport(entry)), signal, 120_000, undefined, srv.model);
+    } catch (e) {
+      if ((e as Error).message === "stopped") throw e;
+    } finally {
+      this.placing = false;
+    }
+    const { peakUtil, peakMem: probed } = await poll;
+    // the memory the poll read joins what the load step measured (whichever saw more)
+    if (probed !== null) peakMem = peakMem !== null ? Math.max(peakMem, probed) : probed;
+    const cpu = cpuBusy(cpu0, cpus());
+    // what the generation actually did: a model that failed or wrote nothing must not be certified as running
+    // on a device from memory and activity alone
+    const ok = !!out && (out.answer.length > 0 || out.thinking.length > 0 || (out.stats?.tokens ?? 0) > 0);
+    return judgePlacement({
+      asked: this.d.compute(), npuUtilPeak: peakUtil, cpuBusyPct: cpu, logHint: logPlacement(this.d.serverLog()), sizeGB: entry.sizeGB,
+      npuMemDeltaGB: peakMem !== null && baseMem !== null ? Math.round((peakMem - baseMem) * 100) / 100 : null,
+      generationSuccess: ok, generatedTokens: out?.stats?.tokens ?? null
+    });
+  }
+
+  private skipped(test: BenchTest, why: string): TestResult {
+    return { id: test.id, section: test.section, title: test.title, score: 0, note: why, answer: "", thinking: "", asked: { maxTokens: 0, effort: null }, ttftSec: null, tokPerSec: null, tokens: 0, totalSec: 0, finish: null, skipped: why };
+  }
+
+  /** One request, collected. `level` is the thinking level for models that have one. */
+  /** What each engine refused, by engine: learnt once, then not sent again for the rest of the run. */
+  private refused = new Map<string, Set<string>>();
+  private engineOf = (entry: CatalogEntry) => (entry.id.startsWith("foundry:") ? "Foundry Local" : "GenieX");
+
+  private async ask(entry: CatalogEntry, endpoint: string, messages: BenchTest["messages"], maxTokens: number, level: ReturnType<typeof effortFor>["level"], signal: AbortSignal, timeoutMs = 300_000, onDelta?: (kind: "answer" | "thinking", text: string, stats: { chunks: number; ttftSec: number | null; tps: number | null }) => void, modelRef?: string, samplingOverride?: Partial<typeof entry.sampling>) {
+    if (signal.aborted) throw new Error("stopped"); // an abort that happened before this call is not announced to a listener added after it
+    const e = applyEffort(level, messages, entry);
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    signal.addEventListener("abort", onAbort);
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    let answer = "";
+    let thinking = "";
+    let stats: ChatStats | null = null;
+    const t0 = performance.now();
+    let tFirst: number | null = null;
+    let chunks = 0;
+    try {
+      // the gateway: the 45 s stall window, the refused-fields memory and the usage report stay in one place
+      for await (const ev of new Gateway().stream({
+        // B03: the SERVED model reference (what the server reported it serves), never a
+        // catalog spelling reconstructed from the entry — the server and the completions
+        // call must name the same exact artifact.
+        endpoint, model: modelRef ?? entryRef(entry), messages: e.messages, id: "bench",
+        sampling: { ...entry.sampling, ...samplingOverride, max_tokens: this.engineOf(entry) === "Foundry Local" ? Math.max(maxTokens, FOUNDRY_MIN_TOKENS) : maxTokens }, signal: ac.signal, body: e.body,
+        thinkOpen: thinkingSupport(entry) === "always", fetchFn: this.d.fetchFn, identity: false, // the bench prompts are frozen datasets: measured as written
+        refused: this.refused.get(this.engineOf(entry)) ?? this.refused.set(this.engineOf(entry), new Set()).get(this.engineOf(entry)),
+        onDropped: (fields, said) => this.log(`${this.engineOf(entry)} refused ${fields.join(", ")} (${said.replace(/\s+/g, " ").slice(0, 160)}): left out of the requests from now on.`)
+      })) {
+        if (ev.type === "answer" || ev.type === "thinking") {
+          if (ev.type === "answer") answer += ev.text; else thinking += ev.text;
+          chunks++;
+          const now = performance.now();
+          tFirst ??= now;
+          const gen = (now - tFirst) / 1000;
+          onDelta?.(ev.type, ev.text, { chunks, ttftSec: Math.round(((tFirst - t0) / 1000) * 100) / 100, tps: gen > 0.4 && chunks > 3 ? Math.round(((chunks - 1) / gen) * 10) / 10 : null });
+        } else if (ev.type === "done") stats = ev.stats;
+      }
+    } catch (err) {
+      if (signal.aborted) throw new Error("stopped");
+      if (ac.signal.aborted) throw new Error(`no answer after ${Math.round(timeoutMs / 1000)} s`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
+    return { answer: answer.trim(), thinking, stats };
+  }
+
+  private async test(entry: CatalogEntry, srv: { endpoint: string; nctx: number; model?: string }, test: BenchTest, signal: AbortSignal, express: boolean): Promise<TestResult> {
+    const { support, level } = effortFor(test, entry);
+    const promptTokens = Math.ceil(JSON.stringify(test.messages).length / 3.2);
+    const thinks = support === "always" || (support === "toggle" && test.think);
+    const wantRoom = (express ? Math.min(test.maxTokens, EXPRESS_ANSWER) : test.maxTokens) + (thinks ? (express ? EXPRESS_THINK_ROOM : THINK_ROOM) : 0);
+    const maxTokens = Math.max(64, Math.min(wantRoom, srv.nctx - promptTokens - 160));
+    const base = { id: test.id, section: test.section, title: test.title, asked: { maxTokens, effort: level } };
+    const prompt = String([...test.messages].reverse().find((m) => m.role === "user")?.content ?? "").slice(0, 700);
+    const t0 = performance.now();
+    const live: BenchLive = { model: entry.name, testId: test.id, test: test.title, section: test.section, prompt, answer: "", thinking: "", tokens: 0, tokensEstimated: true, ttftSec: null, tokPerSec: null, elapsedSec: 0, done: false };
+    let lastEmit = 0;
+    const push = (force = false) => {
+      const now = performance.now();
+      if (!force && now - lastEmit < 90) return;
+      lastEmit = now;
+      live.elapsedSec = Math.round((now - t0) / 100) / 10;
+      this.d.emitLive?.({ ...live });
+    };
+    push(true);
+    this.liveTps = null;
+    try {
+      const { answer, thinking, stats } = await this.ask(entry, srv.endpoint, test.messages, maxTokens, level, signal, this.d.testTimeoutMs, (kind, text, st) => {
+        if (kind === "answer") live.answer += text; else live.thinking += text;
+        live.tokens = st.chunks; live.tokensEstimated = true; live.ttftSec = st.ttftSec; live.tokPerSec = st.tps;
+        this.liveTps = st.tps;
+        push();
+      }, srv.model);
+      this.liveTps = null;
+      let c: Check;
+      try { c = test.check(answer); } catch (e) { c = { score: 0, note: `check failed: ${(e as Error).message}` }; }
+      if (c.skip) return this.skipped(test, c.skip);
+      live.answer = answer; live.thinking = thinking; live.done = true; live.score = c.score; live.note = c.note;
+      if (stats) { live.tokens = stats.tokens; live.tokensEstimated = !!stats.tokensEstimated; live.tokPerSec = stats.tokPerSec ?? live.tokPerSec; live.ttftSec = stats.ttftSec ?? live.ttftSec; }
+      push(true);
+      if (!answer && thinking) c = { score: 0, note: stats?.finish === "length" ? "ran out of tokens while still thinking" : "only thought, no answer" };
+      else if (!answer) c = { score: 0, note: "empty answer" };
+      return { ...base, score: Math.round(c.score * 1000) / 1000, note: c.note, answer, thinking, ttftSec: stats?.ttftSec ?? null, tokPerSec: stats?.tokPerSec ?? null, tokens: stats?.tokens ?? 0, tokensEstimated: stats ? !!stats.tokensEstimated : true, totalSec: stats?.totalSec ?? 0, finish: stats?.finish ?? null };
+    } catch (e) {
+      this.liveTps = null;
+      if ((e as Error).message === "stopped") throw e;
+      live.done = true; live.score = 0; live.note = (e as Error).message.slice(0, 120);
+      push(true);
+      return { ...base, score: 0, note: "error", answer: "", thinking: "", ttftSec: null, tokPerSec: null, tokens: 0, totalSec: 0, finish: null, error: (e as Error).message.slice(0, 200) };
+    }
+  }
+}

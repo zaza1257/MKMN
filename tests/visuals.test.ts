@@ -1,0 +1,273 @@
+import { describe, expect, it } from "vitest";
+import { CHART_CALC_INSTRUCTIONS, chartModel, chartOutputs, formulaLines, parseChartSpec, type ChartSpec } from "../src/core/chart";
+import { routeVisual } from "../src/core/visualRoute";
+import { diagramFlaw, diagramKind, flowPieces, healDiagram, mendDiagram } from "../src/core/diagram";
+import { blockFlaw, settleBlocks, cellNumber, evalSheet, parseCards, parseChecklist, parseKpis, parseQuiz, parseSheet } from "../src/core/blocks";
+import { parseFormula } from "../src/core/chart";
+import { parseMarkdown } from "../src/core/markdown";
+import { buildSystemPrompt } from "../src/core/projects";
+
+const example = () => {
+  const m = /```chart\n([\s\S]*?)\n```/.exec(CHART_CALC_INSTRUCTIONS);
+  return m![1];
+};
+
+describe("the calculator chart", () => {
+  it("the example the model is given is a valid chart, with formulas, results and an axis that follows the duration", () => {
+    const spec = parseChartSpec(example()) as ChartSpec;
+    expect(typeof spec).toBe("object");
+    expect(spec.x.maxExpr).toBe("t");
+    expect(spec.outputs).toHaveLength(2);
+    expect(spec.formulas).toHaveLength(2);
+  });
+  it("works the results and writes the formula with the typed values", () => {
+    const spec = parseChartSpec(example()) as ChartSpec;
+    const out = chartOutputs(spec, { P: 10000, r: 5, t: 10 });
+    expect(out[0].value).toBeCloseTo(16288.95, 2);
+    expect(out[0].text).toMatch(/^16\s?288,95\s€$/);
+    const lines = formulaLines(spec, { P: 10000, r: 5, t: 10 });
+    expect(lines[0].filled).toBe(false);
+    expect(lines[1].tex).toContain("10\\,000");
+    expect(lines[1].tex).toContain("16\\,288,95");
+  });
+  it("the axis ends at the duration the person typed, even beyond the slider", () => {
+    const spec = parseChartSpec(example()) as ChartSpec;
+    const m = chartModel(spec, { P: 10000, r: 5, t: 45 });
+    expect(m.xMax).toBe(45);
+    expect(m.series[0].pts[45].y).toBeCloseTo(10000 * 1.05 ** 45, 2);
+  });
+  it("says what is wrong with an unreadable result or formula line", () => {
+    expect(parseChartSpec('{"series":[{"name":"a","data":[1,2]}],"outputs":[{"label":"x","y":"2 +"}]}')).toMatch(/result "x" cannot be read/);
+    expect(parseChartSpec('{"series":[{"name":"a","data":[1,2]}],"formulas":["A = [[nope]]"]}')).toMatch(/\[\[nope\]\]/);
+  });
+});
+
+describe("more kinds of chart", () => {
+  it("reads scatter points, a donut, a radar and piled bars", () => {
+    const sc = parseChartSpec('{"type":"scatter","series":[{"name":"a","points":[[1,2],[3,5],[2,4]]}]}') as ChartSpec;
+    const m = chartModel(sc);
+    expect(m.series[0].pts.map((p) => p.x)).toEqual([1, 2, 3]);
+    expect(parseChartSpec('{"type":"doughnut","labels":["a","b"],"series":[{"name":"s","data":[1,3]}]}')).toMatchObject({ type: "donut" });
+    const radar = chartModel(parseChartSpec('{"type":"radar","labels":["a","b","c"],"series":[{"name":"s","data":[3,6,9]}]}') as ChartSpec);
+    expect(radar.series[0].pts).toHaveLength(3);
+    expect(radar.yMax).toBeGreaterThanOrEqual(9);
+    expect(parseChartSpec('{"type":"radar","labels":["a"],"series":[{"name":"s","data":[1]}]}')).toMatch(/3 names/);
+    const st = chartModel(parseChartSpec('{"type":"bar","stack":true,"labels":["a","b"],"series":[{"name":"x","data":[2,3]},{"name":"y","data":[4,1]}]}') as ChartSpec);
+    expect(st.yMax).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe("routing a request to a picture instead of a page", () => {
+  const kind = (r: string, files = false) => routeVisual(r, { hasFiles: files })?.kind ?? null;
+  it("sends the compound interest request that produced an ugly page to a calculator chart", () => {
+    expect(kind("make a compound interest diagram where I can choose the annual rate, the starting amount and the duration of the investment, that shows the base formula, the formula with my values and a graph of the sum over the duration\n\nI want to be able to enter the exact number for each of the values")).toBe("calculator");
+  });
+  it("tells charts, diagrams and calculators apart", () => {
+    expect(kind("plot a chart of the population of France")).toBe("chart");
+    expect(kind("make a pie chart of my budget")).toBe("chart");
+    expect(kind("make an org chart of a startup")).toBe("diagram");
+    expect(kind("draw a sequence diagram of a login")).toBe("diagram");
+    expect(kind("diagram of the water cycle")).toBe("diagram");
+    expect(kind("make a mortgage calculator for a home loan")).toBe("calculator");
+    expect(kind("diagram of sales 2020 2021 2022")).toBe("chart");
+  });
+  it("leaves programs, pages, questions and edits to the build steps", () => {
+    expect(kind("make a snake game")).toBeNull();
+    expect(kind("make a calculator")).toBeNull();
+    expect(kind("create a web page with a chart")).toBeNull();
+    expect(kind("explain compound interest to me")).toBeNull();
+    expect(kind("the diagram is ugly, make it prettier", true)).toBeNull();
+  });
+  it("gives a routed request the rules of its picture and no artifact rules", () => {
+    const p = buildSystemPrompt({ knowledgeChars: 1000, artifacts: true, visual: routeVisual("make an org chart") });
+    expect(p).toContain("mermaid");
+    expect(p).not.toContain("<artifact");
+    const q = buildSystemPrompt({ knowledgeChars: 1000, artifacts: true });
+    expect(q).toContain("<artifact");
+    expect(q).toContain("```mermaid");
+    expect(q).toContain("```chart");
+  });
+});
+
+describe("diagrams", () => {
+  it("quotes the labels that would stop a flowchart from drawing", () => {
+    const t = mendDiagram("flowchart TD\n  A[Start (step 1)] --> B{Ok ? yes, no}\n  B --> C[(Base)]");
+    expect(t).toContain('A["Start (step 1)"]');
+    expect(t).toContain('B{"Ok ? yes, no"}');
+    expect(t).toContain("C[(Base)]");
+  });
+  it("removes a code fence, an init block and curly quotes, and gives a bare flow its first line", () => {
+    expect(mendDiagram("```mermaid\nsequenceDiagram\n A->>B: hello\n```")).toBe("sequenceDiagram\n A->>B: hello");
+    expect(mendDiagram('%%{init: {"theme":"dark"}}%%\nflowchart LR\n A --> B')).toBe("flowchart LR\n A --> B");
+    expect(mendDiagram("A --> B\nB --> C")).toMatch(/^flowchart TD/);
+    expect(diagramKind("mindmap\n  root((x))")).toBe("mindmap");
+    expect(diagramKind("hello")).toBeNull();
+  });
+});
+
+describe("figures, cards and tables", () => {
+  it("reads figures and cards written as lines", () => {
+    expect(parseKpis("Final | 16 289 € | after 10 years\nInterest: 6 289 €\nnothing")).toEqual([{ label: "Final", value: "16 289 €", note: "after 10 years" }, { label: "Interest", value: "6 289 €", note: undefined }]);
+    expect(parseCards("- Capital of France? | Paris\n2. 2+2 | 4")).toEqual([{ front: "Capital of France?", back: "Paris" }, { front: "2+2", back: "4" }]);
+  });
+  it("reads a markdown table with its alignment, and keeps a paragraph that merely contains a bar", () => {
+    const [t] = parseMarkdown("| Year | Amount |\n|:--|--:|\n| 1 | 10 500 |\n| 2 | 11 025 |");
+    expect(t).toMatchObject({ t: "table", align: ["l", "r"] });
+    expect((t as any).rows).toHaveLength(2);
+    expect(parseMarkdown("a | b is not a table")[0].t).toBe("p");
+  });
+});
+
+describe("quizzes, lists, sheets and documents", () => {
+  const kind = (r: string, files = false) => routeVisual(r, { hasFiles: files })?.kind ?? null;
+  it("routes a quiz, a checklist and a spreadsheet to their blocks", () => {
+    expect(kind("make me a multiple-choice quiz on the French revolution")).toBe("quiz");
+    expect(kind("quiz me on the periodic table")).toBe("quiz");
+    expect(kind("make a checklist for going on a trip")).toBe("checklist");
+    expect(kind("make a monthly budget spreadsheet with totals")).toBe("sheet");
+  });
+  it("never forces a block where a document is the logical thing", () => {
+    expect(kind("write a report on compound interest with a chart")).toBeNull();
+    expect(kind("write a study guide with a quiz")).toBeNull();
+    expect(kind("make a course on TCP with a diagram")).toBeNull();
+    expect(kind("just make a chart of the report")).not.toBeNull();
+    expect(kind("make a quiz game")).toBeNull();
+  });
+});
+
+describe("the quiz, list and sheet blocks", () => {
+  it("reads a quiz with right and wrong options and explanations, and drops a question with no right answer", () => {
+    const q = parseQuiz("Q: Capital of France?\n- Lyon\n+ Paris\n- Rome\n> Since 987.\n\n2. 2+2?\na) 3\nb) 4 ✓\n\nQ: no answer\n- a\n- b");
+    expect(q).toHaveLength(2);
+    expect(q[0]).toMatchObject({ question: "Capital of France?", why: "Since 987." });
+    expect(q[0].options.map((o) => o.right)).toEqual([false, true, false]);
+    expect(q[1].options[1]).toEqual({ text: "4", right: true });
+  });
+  it("reads a checklist", () => {
+    expect(parseChecklist("[x] passport\n- [ ] tickets\n- socks")).toEqual([{ text: "passport", done: true }, { text: "tickets", done: false }, { text: "socks", done: false }]);
+  });
+  it("works a sheet: references, ranges, chains of formulas, and a cell that needs itself", () => {
+    const rows = parseSheet("Item | Price | Qty | Total\nCoffee | 3,5 | 4 | =B2*C2\nTea | 2,8 | 2 | =B3*C3\nTotal | | | =SUM(D2:D3)\nLoop | =B5 | | =D5+1");
+    const out = evalSheet(rows, parseFormula);
+    expect(out[1][3].value).toBeCloseTo(14);
+    expect(out[3][3].value).toBeCloseTo(19.6);
+    expect(out[4][1].error).toBeTruthy();
+    expect(cellNumber("1 200,50 €")).toBe(1200.5);
+    expect(cellNumber("12 %")).toBeCloseTo(0.12);
+    expect(cellNumber("abc")).toBeNull();
+  });
+});
+
+describe("automatic correction", () => {
+  // a pretend drawer: a text draws when it has no line with the word BAD
+  const check = async (t: string) => { const at = t.split("\n").findIndex((l) => /BAD/.test(l)); return at < 0 ? null : `Parse error on line ${at + 1}:`; };
+  it("leaves a diagram that draws alone", async () => {
+    expect(await healDiagram("flowchart TD\n A --> B", check)).toEqual({ text: "flowchart TD\n A --> B", how: "none" });
+  });
+  it("removes style lines before anything else", async () => {
+    const strict = async (t: string) => (/^\s*style /m.test(t) ? "Parse error on line 3:" : null);
+    expect(await healDiagram("flowchart TD\n A --> B\n style A fill:#f9f", strict)).toMatchObject({ how: "mended", text: expect.not.stringContaining("style") });
+  });
+  it("asks the model with the reason, and checks what it sends back", async () => {
+    const asked: string[] = [];
+    const r = await healDiagram("flowchart TD\n A --> B\n BAD", check, async (_t, why) => { asked.push(why); return asked.length === 1 ? "flowchart TD\n A --> BAD" : "```mermaid\nflowchart TD\n A --> B\n```"; });
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toMatch(/line 3/);
+    expect(r).toEqual({ text: "flowchart TD\n A --> B", how: "model" });
+  });
+  it("leaves out the line the parser points at when nothing else works, and never the first line", async () => {
+    expect(await healDiagram("flowchart TD\n A --> B\n BAD\n C --> D", check, async () => null)).toEqual({ text: "flowchart TD\n A --> B\n C --> D", how: "trimmed" });
+    expect(await healDiagram("BAD\n A --> B", check)).toMatchObject({ error: expect.any(String) });
+  });
+  it("cuts long node labels into lines so that a decision is not a huge diamond", () => {
+    const t = mendDiagram('flowchart TD\n  A --> B{"Do you have any questions about your investment today?"}\n  B -->|"Yes, several questions"| C["Short"]');
+    expect(t).toMatch(/B\{"Do you have any<br\/>/);
+    expect(t).toContain('|"Yes, several questions"|');
+    expect(t).toContain('C["Short"]');
+  });
+  it("finds the parts of a flowchart that are not joined", () => {
+    const one = 'flowchart TD\n A["a"] -->|yes| B{"b"}\n B --> C & D\n D --> A';
+    expect(flowPieces(one)).toHaveLength(1);
+    expect(diagramFlaw(one)).toBeNull();
+    const two = 'flowchart TD\n A((Start)) --> B{"Q ?"}\n B -->|YES| C["x"]\n H["Annuity"] --> I{"Q2 ?"}\n I -->|Yes| J((End))';
+    expect(flowPieces(two)).toHaveLength(2);
+    expect(diagramFlaw(two)).toMatch(/2 separate parts/);
+    expect(diagramFlaw("sequenceDiagram\n A->>B: hi")).toBeNull();
+  });
+  it("asks the model once to join a diagram in pieces, and keeps its answer only when it holds together better", async () => {
+    const two = "flowchart TD\n A --> B\n C --> D";
+    const ok = async () => null;
+    expect(await healDiagram(two, ok, async () => "flowchart TD\n A --> B\n B --> C\n C --> D")).toEqual({ text: "flowchart TD\n A --> B\n B --> C\n C --> D", how: "model" });
+    expect(await healDiagram(two, ok, async () => "flowchart TD\n A --> B\n C --> D\n E --> F")).toEqual({ text: two, how: "none" });
+    expect(await healDiagram(two, async (t) => (t.includes("B --> C") ? "bad" : null), async () => "flowchart TD\n A --> B\n B --> C\n C --> D")).toEqual({ text: two, how: "none" });
+  });
+  it("finds the blocks that would show less than was written, and says why", () => {
+    expect(blockFlaw("quiz", "Q: a?\n- x\n- y")).toMatch(/no question could be read/);
+    expect(blockFlaw("quiz", "Q: a?\n- x\n+ y\nQ: b?\n- x\n- y")).toMatch(/1 question\(s\) were dropped/);
+    expect(blockFlaw("sheet", "a | b\n1 | =A9+Z1+A2*")).toMatch(/cannot be worked out/);
+    expect(blockFlaw("kpi", "nothing here")).toMatch(/no figure/);
+    expect(blockFlaw("quiz", "Q: a?\n- x\n+ y")).toBeNull();
+    expect(blockFlaw("python", "x")).toBeNull();
+  });
+  it("gives a broken block to the model, keeps a good answer and leaves the rest of the reply alone", async () => {
+    const reply = "Here:\n```quiz\nQ: a?\n- x\n- y\n```\nEnd\n```checklist\n[ ] ok\n```";
+    const ask = async (_s: string, user: string) => { expect(user).toContain("Why it does not draw"); return "```quiz\nQ: a?\n- x\n+ y\n```"; };
+    const r = await settleBlocks(reply, ask);
+    expect(r.mended).toBe(1);
+    expect(r.text).toContain("+ y");
+    expect(r.text).toContain("[ ] ok");
+    const stuck = await settleBlocks(reply, async () => "still nothing");
+    expect(stuck.mended).toBe(0);
+    expect(stuck.left).toHaveLength(1);
+    expect(stuck.text).toBe(reply);
+  });
+});
+
+describe("formulas copied into the text around a chart", () => {
+  it("fills the placeholders and typesets the TeX", async () => {
+    const { mendLeakedFormulas } = await import("../src/core/chart");
+    const chart = JSON.stringify({ type: "line", params: [{ id: "P", min: 0, max: 20000, value: 10000 }, { id: "r", min: 0, max: 10, value: 5 }, { id: "t", min: 1, max: 30, value: 10 }], series: [{ y: "P*(1+r/100)^x" }], x: { min: 0, max: 10 } });
+    const text = "Here (A = [[P]](1+\\\\frac{[[r]]}{100})^{[[t]]} = [[=P*(1+r/100)^t]]).\n```chart\n" + chart + "\n```\n";
+    const r = mendLeakedFormulas(text);
+    expect(r.mended).toBe(true);
+    expect(r.text).not.toMatch(/\[\[/);
+    expect(r.text).toContain("($A = 10\\,000(1+\\frac{5}{100})^{10} = 16\\,288,95$)");
+    expect(r.text).toContain("\\frac{5}{100}");
+    expect(mendLeakedFormulas("rien [[P]]").mended).toBe(false);
+  });
+});
+
+describe("a chart whose JSON is broken is mended", () => {
+  it("mends the stray quote seen in a real answer, without a model", async () => {
+    const { healChartText } = await import("../src/core/chart");
+    const raw = '{"type":"line","title":"C","x":{"label":"Years","min":0,"max":"t","step":1},"params":[{"id":"P","label":"Start","min":0,"max":100000,"value":5000,"step":500},{"id":"r","label":"Rate","min":0,"max":15,"value":5,"step":0.1},{"id":"t","label":"Years","min":1,"max":40,"value":10,"step":1}],"formulas":[{"label":"Base","tex":"A = P(1+r/100)^t"},"{"label":"Values","tex":"A = [[P]]"}],"series":[{"name":"With","y":"P*(1+r/100)^x"}]}';
+    const r = await healChartText(raw);
+    expect("text" in r && r.how).toBe("repaired");
+  });
+  it("asks the model when the text cannot be mended, and says so when it fails", async () => {
+    const { healChartText } = await import("../src/core/chart");
+    const r = await healChartText("not json at all", async () => "still not");
+    expect("error" in r).toBe(true);
+  });
+});
+
+describe("slips seen in a small model's chart reply", () => {
+  it("reads a formula written as a bare [[=...]] and one wrapped in quotes", async () => {
+    const { parseChartSpec } = await import("../src/core/chart");
+    const raw = '{"type":"line","x":{"min":0,"max":10},"params":[{"id":"P","min":0,"max":100,"value":10},{"id":"r","min":0,"max":10,"value":5}],"series":[{"name":"a","y":[[=P*(1+r/100)^x]]},{"name":"b","y":"[[=P]]"}],"outputs":[{"label":"o","y":"[[=P*2]]"}]}';
+    const spec = parseChartSpec(raw);
+    expect(typeof spec).toBe("object");
+    if (typeof spec === "object") {
+      expect(spec.series[0].y).toBe("P*(1+r/100)^x");
+      expect(spec.series[1].y).toBe("P");
+      expect(spec.outputs?.[0].y).toBe("P*2");
+    }
+  });
+  it("cuts a code block that copies the app's own instructions", async () => {
+    const { stripPromptLeak } = await import("../src/core/artifacts");
+    const r = stripPromptLeak('Ok.\n```\nmy name is fabien\nYou are one assistant. Speak in the first person singular\n```\nFin.');
+    expect(r.stripped).toBe(true);
+    expect(r.text).toBe("Ok.\nFin.");
+    expect(stripPromptLeak("```js\nlet a = 1\n```").stripped).toBe(false);
+  });
+});

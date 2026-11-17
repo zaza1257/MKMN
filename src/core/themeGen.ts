@@ -1,0 +1,129 @@
+import type { Theme } from "./slides";
+import { fromHsl } from "./color";
+import { legalize } from "./look";
+import { mendWords } from "./fuzzy";
+
+/**
+ * Themes made on demand instead of listed: a hue, a mood (light, dark, pastel, vivid, earthy, mono) and a style (fonts,
+ * decoration, cover, pattern) give hundreds of looks from a few lines of data. People ask for them in words
+ * ("an old-looking theme", "technology", "for a class presentation"): `findTheme` reads the words and
+ * composes the look. Nothing here is a list of colours to maintain, and no outside palette is shipped.
+ */
+
+export const MOODS = ["light", "dark", "pastel", "vivid", "earthy", "mono"] as const;
+export type Mood = (typeof MOODS)[number];
+
+interface Style { id: string; titleFont: string; bodyFont: string; deco: Theme["deco"]; cover: Theme["cover"]; pattern: Theme["pattern"]; mood: Mood; hue: number; round?: boolean }
+export const STYLES: Style[] = [
+  { id: "tech", titleFont: "Bahnschrift", bodyFont: "Segoe UI", deco: "top", cover: "split", pattern: "grid", mood: "dark", hue: 200 },
+  { id: "retro", titleFont: "Georgia", bodyFont: "Palatino Linotype", deco: "band", cover: "frame", pattern: "none", mood: "earthy", hue: 30 },
+  { id: "class", titleFont: "Trebuchet MS", bodyFont: "Calibri", deco: "bar", cover: "light", pattern: "circles", mood: "vivid", hue: 215 },
+  { id: "corporate", titleFont: "Calibri", bodyFont: "Calibri", deco: "top", cover: "deep", pattern: "circles", mood: "light", hue: 215 },
+  { id: "nature", titleFont: "Palatino Linotype", bodyFont: "Calibri", deco: "band", cover: "split", pattern: "circles", mood: "earthy", hue: 140 },
+  { id: "playful", titleFont: "Trebuchet MS", bodyFont: "Segoe UI", deco: "bar", cover: "light", pattern: "circles", mood: "vivid", hue: 35 },
+  { id: "elegant", titleFont: "Garamond", bodyFont: "Georgia", deco: "none", cover: "frame", pattern: "none", mood: "dark", hue: 42 },
+  { id: "creative", titleFont: "Georgia", bodyFont: "Trebuchet MS", deco: "bar", cover: "split", pattern: "circles", mood: "pastel", hue: 280 },
+  { id: "bold", titleFont: "Bahnschrift", bodyFont: "Segoe UI", deco: "bar", cover: "deep", pattern: "none", mood: "dark", hue: 45 },
+  { id: "minimal", titleFont: "Segoe UI", bodyFont: "Segoe UI", deco: "none", cover: "light", pattern: "none", mood: "mono", hue: 215 },
+  { id: "formal", titleFont: "Cambria", bodyFont: "Calibri", deco: "band", cover: "frame", pattern: "none", mood: "light", hue: 225 },
+  { id: "academic", titleFont: "Garamond", bodyFont: "Georgia", deco: "top", cover: "light", pattern: "none", mood: "light", hue: 350 }
+];
+
+// ---------------------------------------------------------------- colour
+const hsl = (h: number, sat: number, l: number) => fromHsl(h, sat, l);
+
+/** A theme from a hue (0 to 360), a mood and a style. */
+export function generateTheme(hue: number, mood: Mood, styleId: string): Theme {
+  const st = STYLES.find((x) => x.id === styleId) ?? STYLES[3];
+  const h = ((Math.round(hue) % 360) + 360) % 360;
+  const pal = (p: { bg: string; text: string; title: string; muted: string; accent: string; panel: string; dark: boolean; accents?: string[] }) => p;
+  const others = (s: number, l: number) => [hsl(h + 180, s, l), hsl(h + 40, s + 5, l + 4), hsl(h - 50, s, l)];
+  const p = {
+    light: () => pal({ bg: hsl(h, 30, 97), text: hsl(h, 25, 14), title: hsl(h, 62, 26), muted: hsl(h, 12, 48), accent: hsl(h, 72, 45), panel: hsl(h, 40, 93), dark: false }),
+    dark: () => pal({ bg: hsl(h, 45, 10), text: hsl(h, 20, 90), title: "FFFFFF", muted: hsl(h, 15, 66), accent: hsl(h, 88, 62), panel: hsl(h, 35, 17), dark: true }),
+    pastel: () => pal({ bg: hsl(h, 60, 96), text: hsl(h, 25, 20), title: hsl(h, 45, 34), muted: hsl(h, 18, 50), accent: hsl(h, 62, 58), panel: hsl(h, 55, 90), dark: false }),
+    vivid: () => pal({ bg: hsl(h, 100, 98), text: hsl(h, 30, 14), title: hsl(h, 90, 28), muted: hsl(h, 20, 46), accent: hsl(h, 95, 48), panel: hsl(h, 100, 92), dark: false }),
+    earthy: () => pal({ bg: hsl(h, 28, 94), text: hsl(h, 30, 16), title: hsl(h, 55, 24), muted: hsl(h, 16, 46), accent: hsl(h, 58, 36), panel: hsl(h, 30, 88), dark: false }),
+    mono: () => pal({ bg: "F8F8F8", text: "1A1A1A", title: "000000", muted: "777777", accent: hsl(h, 75, 44), panel: "EBEBEB", dark: false })
+  }[mood]();
+  const accents = [p.accent, ...others(p.dark ? 80 : 62, p.dark ? 62 : 42)];
+  const names: Record<number, string> = { 0: "Red", 30: "Orange", 45: "Gold", 60: "Lime", 140: "Green", 175: "Teal", 200: "Cyan", 215: "Blue", 225: "Navy", 270: "Purple", 300: "Magenta", 330: "Pink" };
+  const near = Object.keys(names).map(Number).sort((a, b) => Math.min(Math.abs(a - h), 360 - Math.abs(a - h)) - Math.min(Math.abs(b - h), 360 - Math.abs(b - h)))[0];
+  return legalize({ id: `gen:${h}-${mood}-${st.id}`, name: `${names[near]} ${mood} ${st.id}`, hint: `${mood} ${names[near].toLowerCase()}, ${st.id} style`, ...p, accents, titleFont: st.titleFont, bodyFont: st.bodyFont, deco: st.deco, cover: st.cover, pattern: st.pattern }).theme;
+}
+
+// ---------------------------------------------------------------- words
+/** A word-boundary regex that understands accented letters (JavaScript's \\b does not: it fails before an accented letter). */
+const wb = (re: RegExp): RegExp => new RegExp(re.source.replace(/^\\b\(/, "(?<![\\p{L}\\d])(").replace(/\)\\b$/, ")(?![\\p{L}\\d])").replace(/\\w/g, "\\p{L}"), "u");
+const HUES: [RegExp, number][] = [
+  [/\b(red|burgundy)\b/, 355], [/\b(orange|coral)\b/, 25], [/\b(yellow|gold|golden|amber)\b/, 45],
+  [/\b(green|emerald|olive|sage)\b/, 140], [/\b(turquoise|teal)\b/, 175], [/\b(cyan|aqua)\b/, 195], [/\b(blue)\b/, 215],
+  [/\b(marine|navy|indigo)\b/, 228], [/\b(violet|purple|mauve|lavender)\b/, 270], [/\b(rose|pink|fuchsia|magenta)\b/, 330], [/\b(brown|terracotta)\b/, 22]
+];
+const MOOD_WORDS: [RegExp, Mood][] = [
+  [/\b(dark|night|black)\b/, "dark"], [/\b(light|white|bright)\b/, "light"], [/\b(pastel|soft)\b/, "pastel"],
+  [/\b(vivid|colou?rful|flashy|punchy|saturated)\b/, "vivid"], [/\b(earthy|warm)\b/, "earthy"], [/\b(grey|gray|monochrome|neutral)\b/, "mono"]
+];
+const STYLE_WORDS: [RegExp, string][] = [
+  [/\b(tech\w*|techno\w*|ai|code|coding|digital|cyber\w*|futur\w*|startup|software|robot\w*|data|science fiction|sci-fi)\b/, "tech"],
+  [/\b(old|vintage|retro|antique|history|historical|medieval\w*|seventies|eighties|nineties)\b/, "retro"],
+  [/\b(class|school|college|education\w*|student\w*|prof\w*|teacher|note|notes|grade|points?|homework|oral|lesson)\b/, "class"],
+  [/\b(business|company|corporate|finance\w*|bank|pitch|investor\w*|meeting|report|marketing|sales|b2b|strategy|consulting)\b/, "corporate"],
+  [/\b(nature|environment\w*|eco\w*|durable|sustainab\w*|climate|animals|plants?|garden\w*|bio|organic|ecolog\w*|forest|ocean|sea)\b/, "nature"],
+  [/\b(kids?|children|fun|playful|joyful|party|birthday|game|games|gaming|cartoon|cute)\b/, "playful"],
+  [/\b(elegan\w*|luxury|chic|refined|premium|wedding|mode|fashion|jewel\w*|gala|prestige)\b/, "elegant"],
+  [/\b(creativ\w*|art|artist\w*|design\w*|music|photo\w*|portfolio|film|cinema|theat\w*|culture|festival|poetry)\b/, "creative"],
+  [/\b(sport\w*|energ\w*|launch|event|impact|strong|bold|powerful|dynamic|motivation|fitness|course|racing)\b/, "bold"],
+  [/\b(minimal\w*|simple|clean|basic|neutral|plain)\b/, "minimal"],
+  [/\b(formal|serious|legal|law|institution\w*|government|official)\b/, "formal"],
+  [/\b(academi\w*|research|thesis|conference|science\w*|scientific|literature|journal)\b/, "academic"]
+];
+/** The hue a subject suggests when the person named no colour. */
+const HUES_W = HUES.map(([r, v]) => [wb(r), v] as [RegExp, number]), MOODS_W = MOOD_WORDS.map(([r, v]) => [wb(r), v] as [RegExp, Mood]), STYLES_W = STYLE_WORDS.map(([r, v]) => [wb(r), v] as [RegExp, string]);
+const SUBJECT_HUE: Record<string, number> = { tech: 200, retro: 30, class: 215, corporate: 215, nature: 140, playful: 35, elegant: 42, creative: 280, bold: 45, minimal: 215, formal: 225, academic: 350 };
+
+/** The plain words the rules above know (and a few long ones), for putting a typing slip right: "tecnology" is read as "technology". */
+const KNOWN = [...new Set([
+  ...[...HUES, ...MOOD_WORDS, ...STYLE_WORDS].flatMap(([r]) => r.source.replace(/^\\b\(|\)\\b$/g, "").split("|")).filter((w) => /^[a-z]{5,}$/.test(w)),
+  "technology", "professional", "elegant", "creative", "education", "ecology", "ecological", "minimalist", "academic", "scientific", "historical", "formal", "serious", "colorful", "turquoise", "violet", "orange", "pastel", "vintage", "corporate", "startup"
+])];
+
+export interface Cues { hue?: number; mood?: Mood; style?: string; score: number }
+/** What the words of a request say about the look wanted: a colour, a mood, a kind of subject. */
+export function cuesOf(query: string): Cues {
+  const exact = cuesExact(query);
+  if (exact.score) return exact;
+  const mended = mendWords(query, KNOWN);
+  return mended === query ? exact : cuesExact(mended);
+}
+function cuesExact(query: string): Cues {
+  // what the person does not want ("green instead of orange") says nothing about the look
+  const q = query.toLowerCase().replace(/\b(?:instead of|rather than|and not|but not|not|except)\b[\s\S]*$/u, " ");
+  const c: Cues = { score: 0 };
+  for (const [re, hue] of HUES_W) if (re.test(q)) { c.hue = hue; c.score++; break; }
+  for (const [re, mood] of MOODS_W) if (re.test(q)) { c.mood = mood; c.score++; break; }
+  let best = { id: "", n: 0 };
+  for (const [re, id] of STYLES_W) { const n = (q.match(new RegExp(re.source, "gu")) ?? []).length; if (n > best.n) best = { id, n }; }
+  if (best.n) { c.style = best.id; c.score += best.n; }
+  return c;
+}
+
+/** The theme the words ask for, or null when they say nothing about a look. */
+export function findTheme(query: string): Theme | null {
+  const c = cuesOf(query);
+  if (!c.score) return null;
+  const st = STYLES.find((x) => x.id === c.style);
+  const mood = c.mood ?? st?.mood ?? "light";
+  const hue = c.hue ?? (c.style ? SUBJECT_HUE[c.style] : undefined) ?? 215;
+  // "vieux" with no colour is brown and warm; "tech" is cyan and dark; a colour word alone keeps the default style
+  return generateTheme(hue, mood, st?.id ?? "corporate");
+}
+
+/** A theme from its id ("gen:200-dark-tech"). */
+export function themeFromId(id: string): Theme | null {
+  const m = /^gen:(\d{1,3})-(light|dark|pastel|vivid|earthy|mono)-([a-z]+)$/.exec(id.trim().toLowerCase());
+  return m ? generateTheme(Number(m[1]), m[2] as Mood, m[3]) : null;
+}
+
+/** How many looks can be made: every hue step, mood and style. */
+export const THEME_COUNT = 12 * MOODS.length * STYLES.length;

@@ -1,0 +1,67 @@
+[package]
+name = "mkmn"
+version = "0.0.1"
+description = "MKMN | مَكمَن - Sovereign Local AI Studio"
+authors = ["MKMN"]
+edition = "2024"
+rust-version = "1.90"
+
+[[bin]]
+name = "MKMN"
+path = "src/main.rs"
+
+[lib]
+name = "mkmn_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.12.5", features = ["custom-protocol", "tray-icon", "image-png", "image-ico"] }
+tauri-plugin-log = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-process = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+sha2 = "0.10"
+windows-sys = { version = "0.61", features = [
+    "Win32_System_JobObjects",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_NetworkManagement_IpHelper",
+] }
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Globalization",
+    "Graphics_Imaging",
+    "Win32_Graphics_Dwm",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_Graphics_DXCore",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_Security",
+] }
+
+[patch.crates-io]
+vswhom-sys = { path = "../crates/vswhom-sys" }
+tauri-winres = { path = "../crates/tauri-winres" }

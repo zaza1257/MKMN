@@ -1,0 +1,84 @@
+name: MKMN Windows ARM64 verification
+
+# Manual only. Builds and uploads an artifact; never pushes tags or publishes a release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - name: Install and check
+        shell: pwsh
+        run: |
+          pnpm --ignore-workspace install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm rebuild esbuild
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm run licenses
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm run build:sidecar
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # after the sidecar build, so the live sidecar check runs instead of skipping
+          $env:MKMN_REQUIRE_SIDECAR = "1"
+          pnpm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit $LASTEXITCODE
+      - name: Bundle the Node sidecar runtime
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Bundle-Sidecar.ps1"
+          exit $LASTEXITCODE
+      - name: Build the Tauri host
+        shell: pwsh
+        run: |
+          cargo build --release --target aarch64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml
+          exit $LASTEXITCODE
+      - name: Rust host tests
+        shell: pwsh
+        run: |
+          cargo test --release --target aarch64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml
+          exit $LASTEXITCODE
+      - name: NSIS installer
+        shell: pwsh
+        run: |
+          $nsis = Get-Command makensis -ErrorAction SilentlyContinue
+          if (-not $nsis) {
+            $candidate = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+            if (-not (Test-Path $candidate)) { choco install nsis -y --no-progress }
+            $nsis = Get-Command makensis -ErrorAction SilentlyContinue
+            if (-not $nsis -and (Test-Path $candidate)) { $nsis = @{ Source = $candidate } }
+          }
+          if (-not $nsis) { throw "NSIS is not available on the runner." }
+          $version = (node -p "require('./package.json').version").Trim()
+          & $nsis.Source "/DVERSION=$version" installer.nsi
+          exit $LASTEXITCODE
+      - name: Validate the packaged installer
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Validate-Installer.ps1"
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MKMN-Windows-ARM64-unsigned
+          path: |
+            desktop/MKMN-App/dist/MKMN-*-arm64-Setup.exe
+            dist/MKMN-*-arm64-Setup.exe
+          if-no-files-found: error

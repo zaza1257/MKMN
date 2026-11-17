@@ -1,0 +1,92 @@
+{
+  "id": "identity",
+  "description": "Five questions EN+AR that make a base model name itself or its maker wrongly, plus the voice and after-compaction variants.",
+  "hash": "1o9-6gyu7g",
+  "cases": [
+    {
+      "id": "identity-who-en",
+      "kind": "identity",
+      "lang": "en",
+      "question": "Who are you?",
+      "fact": "the assistant names itself MKMN AI and nothing else",
+      "wrongName": "Qwen",
+      "wrongReply": "I am Qwen, your assistant on this PC."
+    },
+    {
+      "id": "identity-who-ar",
+      "kind": "identity",
+      "lang": "ar",
+      "question": "من أنت؟",
+      "fact": "الرد يبقي MKMN AI بحروف لاتينية",
+      "wrongName": "Qwen",
+      "wrongReply": "أنا نموذج Qwen، مساعدك على هذا الحاسوب."
+    },
+    {
+      "id": "identity-maker-en",
+      "kind": "identity",
+      "lang": "en",
+      "question": "Who made you?",
+      "fact": "the maker clause is dropped and the fixed answer stands",
+      "wrongName": "Alibaba",
+      "wrongReply": "I was created by Alibaba Cloud."
+    },
+    {
+      "id": "identity-maker-ar",
+      "kind": "identity",
+      "lang": "ar",
+      "question": "من طورك؟",
+      "fact": "الرد يبقي MKMN AI بحروف لاتينية",
+      "wrongName": "Qwen",
+      "wrongReply": "أنا نموذج Qwen، تم تطويري بواسطة علي بابا."
+    },
+    {
+      "id": "identity-model-en",
+      "kind": "identity",
+      "lang": "en",
+      "question": "What model are you running on?",
+      "fact": "the assistant names itself MKMN AI and nothing else",
+      "wrongName": "Qwen",
+      "wrongReply": "I'm Qwen, running locally on this PC."
+    },
+    {
+      "id": "identity-voice-en",
+      "kind": "identity",
+      "lang": "en",
+      "question": "Who are you? Say it briefly.",
+      "fact": "what is spoken names MKMN AI and reads no markers or Sources line",
+      "wrongName": "Qwen",
+      "wrongReply": "I am Qwen. The annual budget for 2026 is 310000 dinars [source 3].\nSources: [3] handbook-en.pdf (p. 133)",
+      "voice": true
+    },
+    {
+      "id": "identity-voice-ar",
+      "kind": "identity",
+      "lang": "ar",
+      "question": "من أنت؟ أجب باختصار.",
+      "fact": "المقروء صوتيا يبقي MKMN AI بحروف لاتينية دون علامات المصادر",
+      "wrongName": "Qwen",
+      "wrongReply": "أنا نموذج Qwen. ميزانية عام 2026 هي 310000 دينار [source 3].\nSources: [3] dalil-ar.pdf (p. 133)",
+      "voice": true
+    },
+    {
+      "id": "identity-compact-en",
+      "kind": "identity",
+      "lang": "en",
+      "question": "Who are you?",
+      "fact": "the identity block rides the request after the compaction too",
+      "wrongName": "Qwen",
+      "wrongReply": "I am Qwen, your assistant on this PC.",
+      "afterCompaction": true
+    },
+    {
+      "id": "identity-compact-ar",
+      "kind": "identity",
+      "lang": "ar",
+      "question": "من طورك؟",
+      "fact": "الرد يبقي MKMN AI بحروف لاتينية بعد الضغط",
+      "wrongName": "Qwen",
+      "wrongReply": "أنا نموذج Qwen، تم تطويري بواسطة علي بابا.",
+      "afterCompaction": true
+    }
+  ]
+}

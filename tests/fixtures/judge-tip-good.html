@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Calibration: a working tip page</title></head>
+<body>
+<div id="tipAmount">0</div>
+<div id="totalAmount">0</div>
+<input id="bill" type="number" value="0">
+<input id="tip" type="number" value="0">
+<button id="calculate">Calculate</button>
+<script>
+"use strict";
+var S = { billAmount: 0, tipPercentage: 0, tipAmount: 0, totalAmount: 0 };
+function onBillInput(e) { S.billAmount = parseFloat(e.target.value) || 0; }
+function onTipInput(e) { S.tipPercentage = parseFloat(e.target.value) || 0; }
+function onCalculateClick() {
+  S.tipAmount = S.billAmount * S.tipPercentage / 100;
+  S.totalAmount = S.billAmount + S.tipAmount;
+  render();
+}
+function render() {
+  document.getElementById("tipAmount").textContent = S.tipAmount.toFixed(2);
+  document.getElementById("totalAmount").textContent = S.totalAmount.toFixed(2);
+}
+function __run(f, e) { try { return f(e); } catch (err) { console.error(err); } }
+function __go() { try { render(); } catch (err) { console.error(err); } }
+Array.prototype.forEach.call(document.querySelectorAll('[id=' + JSON.stringify("bill") + ']'), function (el) { el.addEventListener("input", function (e) { __run(onBillInput, e); __go(); }); });
+Array.prototype.forEach.call(document.querySelectorAll('[id=' + JSON.stringify("tip") + ']'), function (el) { el.addEventListener("input", function (e) { __run(onTipInput, e); __go(); }); });
+Array.prototype.forEach.call(document.querySelectorAll('[id=' + JSON.stringify("calculate") + ']'), function (el) { el.addEventListener("click", function (e) { __run(onCalculateClick, e); __go(); }); });
+__go();
+</script>
+<!-- x-construct {"title":"Calibration: a working tip page","language":"English","requirements":[{"id":"R1","text":"the bill and the percent are typed in"},{"id":"R2","text":"the tip is the bill times the percent"},{"id":"R3","text":"the total is the bill plus the tip"}],"units":[],"scenarios":[]} -->
+</body>
+</html>

@@ -1,0 +1,380 @@
+{
+  "id": "knowledge",
+  "description": "Questions over the knowledge fixtures (tests/fixtures/knowledge/), including the scanned file's recognized words and the cross-language cases.",
+  "hash": "6hr-lgu71k",
+  "ocr": [
+    {
+      "file": "scanned-notices.pdf",
+      "pages": [
+        "Notice: during Ramadan the west entrance opens at 7 in the morning.",
+        "The reading room closes early on 9 May for maintenance work.",
+        "Lost keys are reported to the building supervisor at extension 204."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "know-en-01",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 7",
+      "question": "In what year did the library open its doors, and how many books were in the collection?",
+      "fact": "The library opened its doors on 14 March 1998 with a collection of 4200 books."
+    },
+    {
+      "id": "know-en-02",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 12",
+      "question": "How many seats does the reading room have?",
+      "fact": "The reading room on the first floor seats 86 people."
+    },
+    {
+      "id": "know-en-03",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 15",
+      "question": "How long do loans run, and how many days does a renewal add?",
+      "fact": "Loans run for 21 days; a renewal adds another 14 days."
+    },
+    {
+      "id": "know-en-04",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 18",
+      "question": "What is the overdue fine per day?",
+      "fact": "The overdue fine is 0.25 dinars per day per book, capped at 12 dinars."
+    },
+    {
+      "id": "know-en-05",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 23",
+      "question": "How much does a non resident card cost a year?",
+      "fact": "Membership is free for residents; a non resident card costs 35 dinars a year."
+    },
+    {
+      "id": "know-en-06",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 27",
+      "question": "What temperature and humidity are kept in the archive room?",
+      "fact": "The archive room keeps a constant 18 degrees Celsius and 45 percent humidity."
+    },
+    {
+      "id": "know-en-07",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 40",
+      "question": "What are the names of the 3D printers in the maker space?",
+      "fact": "The maker space has two 3D printers named Castor and Pollux."
+    },
+    {
+      "id": "know-en-08",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 49",
+      "question": "When did head librarian Dana Farah join?",
+      "fact": "Head librarian Dana Farah joined in April 2016."
+    },
+    {
+      "id": "know-en-09",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 77",
+      "question": "Who handles book binding and repair?",
+      "fact": "Book binding and repair goes to the Falcon Press workshop, order code FP-55."
+    },
+    {
+      "id": "know-en-10",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 104",
+      "question": "How much did the roof renewal cost?",
+      "fact": "The roof was renewed in the summer of 2019 at a cost of 74000 dinars."
+    },
+    {
+      "id": "know-en-11",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 133",
+      "question": "What is the annual budget for 2026?",
+      "fact": "The annual budget for 2026 is 310000 dinars."
+    },
+    {
+      "id": "know-en-12",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 145",
+      "question": "How much is the events budget for 2026?",
+      "fact": "The events budget for 2026 is 9500 dinars."
+    },
+    {
+      "id": "know-en-13",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 171",
+      "question": "How much does a lost card cost to replace?",
+      "fact": "A lost card is replaced for 2 dinars."
+    },
+    {
+      "id": "know-en-14",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "handbook-en.pdf",
+      "place": "p. 196",
+      "question": "When is the annual book sale held?",
+      "fact": "The annual book sale is held on the first weekend of June."
+    },
+    {
+      "id": "know-ar-01",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 2",
+      "question": "متى افتتح الفرع الشرقي؟",
+      "fact": "افتتح الفرع الشرقي في عام 2009"
+    },
+    {
+      "id": "know-ar-02",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 3",
+      "question": "من هو مدير الفرع؟",
+      "fact": "مدير الفرع هو كريم أبيض منذ عام 2018"
+    },
+    {
+      "id": "know-ar-03",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 4",
+      "question": "كم كتابا باللغة العربية يضم الفرع؟",
+      "fact": "يضم الفرع 12000 كتاب باللغة العربية"
+    },
+    {
+      "id": "know-ar-04",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 5",
+      "question": "كم كرسيا تتسع قاعة القراءة؟",
+      "fact": "قاعة القراءة تتسع لـ 40 كرسي"
+    },
+    {
+      "id": "know-ar-05",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 6",
+      "question": "أيام أي الأسبوع يفتح الفرع؟",
+      "fact": "يفتح الفرع أيام الأحد إلى الخميس"
+    },
+    {
+      "id": "know-ar-06",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 11",
+      "question": "كم رسوم الانخراط لغير السكان؟",
+      "fact": "رسوم الانخراط لغير السكان 20 دينارا في السنة"
+    },
+    {
+      "id": "know-ar-07",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 12",
+      "question": "كم تبلغ مدة استعارة الكتاب؟",
+      "fact": "مدة استعارة الكتاب ثلاثة أسابيع"
+    },
+    {
+      "id": "know-ar-08",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 13",
+      "question": "كم غرامة التأخير عن كل يوم؟",
+      "fact": "غرامة التأخير دينار واحد لكل يوم"
+    },
+    {
+      "id": "know-ar-09",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 16",
+      "question": "مع أي شركة عقد النظافة؟",
+      "fact": "عقد النظافة مع شركة الصفاء"
+    },
+    {
+      "id": "know-ar-10",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "dalil-ar.pdf",
+      "place": "p. 17",
+      "question": "ما رقم هاتف الفرع؟",
+      "fact": "رقم هاتف الفرع 51234678"
+    },
+    {
+      "id": "know-doc-01",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "staff-handbook.docx",
+      "place": "Emergency contacts",
+      "question": "What number do you call for the fire brigade?",
+      "fact": "Fire brigade: 125"
+    },
+    {
+      "id": "know-doc-02",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "staff-handbook.docx",
+      "place": "Leave",
+      "question": "Who do annual leave requests go to?",
+      "fact": "Annual leave requests go to Dana Farah at least ten days ahead."
+    },
+    {
+      "id": "know-xls-01",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "equipment.xlsx",
+      "place": "sheet Equipment",
+      "question": "How many projector units are in the main hall?",
+      "fact": "Projector | Main hall | 2 | 2022 | good"
+    },
+    {
+      "id": "know-xls-02",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "equipment.xlsx",
+      "place": "sheet Equipment",
+      "question": "What is the condition of the microscope equipment?",
+      "fact": "Microscope | Lab | 6 | 2020 | fair"
+    },
+    {
+      "id": "know-ppt-01",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "renovation-plan.pptx",
+      "place": "slide 1",
+      "question": "When does the west wing close?",
+      "fact": "The west wing closes in January 2027"
+    },
+    {
+      "id": "know-ppt-02",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "renovation-plan.pptx",
+      "place": "slide 3",
+      "question": "What is the budget for phase three?",
+      "fact": "Budget: 45000 dinars"
+    },
+    {
+      "id": "know-scn-01",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "scanned-notices.pdf",
+      "place": "p. 1, scanned text",
+      "question": "When does the west entrance open during Ramadan?",
+      "fact": "during Ramadan the west entrance opens at 7 in the morning"
+    },
+    {
+      "id": "know-scn-02",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "scanned-notices.pdf",
+      "place": "p. 2, scanned text",
+      "question": "Why does the reading room close early on 9 May?",
+      "fact": "The reading room closes early on 9 May for maintenance work."
+    },
+    {
+      "id": "know-scn-03",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "scanned-notices.pdf",
+      "place": "p. 3, scanned text",
+      "question": "Who are lost keys reported to?",
+      "fact": "Lost keys are reported to the building supervisor at extension 204."
+    },
+    {
+      "id": "know-cross-01",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "dalil-ar.pdf",
+      "place": "p. 3",
+      "crossLanguage": true,
+      "question": "Who has been the manager of the eastern branch, and since when?",
+      "fact": "مدير الفرع هو كريم أبيض منذ عام 2018",
+      "searchWords": "مدير الفرع كريم أبيض 2018"
+    },
+    {
+      "id": "know-cross-02",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "dalil-ar.pdf",
+      "place": "p. 17",
+      "crossLanguage": true,
+      "question": "What is the telephone contact of the eastern branch?",
+      "fact": "رقم هاتف الفرع 51234678",
+      "searchWords": "رقم هاتف الفرع 51234678"
+    },
+    {
+      "id": "know-cross-03",
+      "kind": "knowledge",
+      "lang": "en",
+      "file": "dalil-ar.pdf",
+      "place": "p. 14",
+      "crossLanguage": true,
+      "question": "How large is the gathering hall of the eastern branch?",
+      "fact": "قاعة الاجتماعات تتسع لعشرين شخصا",
+      "searchWords": "قاعة الاجتماعات لعشرين شخصا"
+    },
+    {
+      "id": "know-cross-04",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "handbook-en.pdf",
+      "place": "p. 40",
+      "crossLanguage": true,
+      "question": "ما اسم طابعتا الطباعة ثلاثية الأبعاد؟",
+      "fact": "The maker space has two 3D printers named Castor and Pollux.",
+      "searchWords": "maker space 3D printers Castor Pollux"
+    },
+    {
+      "id": "know-cross-05",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "handbook-en.pdf",
+      "place": "p. 27",
+      "crossLanguage": true,
+      "question": "عند أي درجة تُحفظ غرفة النُّسخ القديمة؟",
+      "fact": "The archive room keeps a constant 18 degrees Celsius and 45 percent humidity.",
+      "searchWords": "archive room constant 18 degrees celsius humidity"
+    },
+    {
+      "id": "know-cross-06",
+      "kind": "knowledge",
+      "lang": "ar",
+      "file": "equipment.xlsx",
+      "place": "sheet Equipment",
+      "crossLanguage": true,
+      "question": "كم عدد أجهزة العرض الموجودة في الصالة الرئيسية؟",
+      "fact": "Projector | Main hall | 2 | 2022 | good",
+      "searchWords": "projector main hall quantity"
+    }
+  ]
+}
