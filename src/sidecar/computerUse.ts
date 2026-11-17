@@ -13,6 +13,7 @@
  * can press Enter anywhere.
  */
 import type { ChatMessage } from "../shared/types";
+import { consequentialReason, consequentialWord } from "../shared/consequential";
 import {
   AGENT_ACTION_KINDS,
   type ActResult,
@@ -95,7 +96,7 @@ Rules:
 - ONE step per reply. Never describe several steps.
 - Before proposing, check the snapshot: if what the task asked for is already visible in it, reply done. Never repeat a step the "WHAT HAS BEEN DONE SO FAR" list already shows as verified - doing the same write again changes nothing.
 - Every ref must come from the CURRENT snapshot you were just given. Never reuse an earlier ref from memory.
-- Prefer setValue into a text field over anything else when the task is to prepare a message or draft. Never press Send, Post, Delete, Pay or any button whose press cannot be taken back: such a press is refused.
+- Prefer setValue into a text field over anything else when the task is to prepare a message or draft. Never press Send, Post, Delete, Pay, OK, Confirm, Yes or any control whose press cannot be taken back, and never press a control with no name: such a press is refused, and the person does it.
 - If the snapshot shows the task is already complete, reply done. If you cannot see a way forward, reply giveUp honestly instead of guessing.
 - Numbers, names, values: quote the window's own text exactly as you read it.`;
 
@@ -529,20 +530,21 @@ export async function runAgentLoop(deps: AgentRunDeps): Promise<AgentRunOutcome>
   }
 }
 
-/** Controls whose press cannot be taken back (send, post, delete, pay...), in English and Arabic.
- * The agent prepares drafts and never presses one: the closed action set has no Enter, and this
- * closes the same door for a click. */
-const IRREVERSIBLE = /\b(send|submit|post|publish|delete|remove|discard|pay|purchase|buy|checkout|place order|transfer|reply all|forward)\b|إرسال|أرسل|نشر|حذف|ادفع|دفع|شراء|اشتر/i;
+/** Controls whose press cannot be taken back (send, confirm, delete, pay...), in English and Arabic.
+ * The agent prepares drafts and never presses one: the closed action set has no Enter, and the
+ * one list of src/shared/consequentialControls.json closes the same door for a click, a toggle
+ * and a select. The native driver checks the element's live name against the same list. */
 export function irreversibleControl(target: Pick<NodeInfo, "name">): boolean {
-  return IRREVERSIBLE.test(target.name ?? "");
+  return consequentialWord(target.name ?? "") !== null;
 }
 
 /** Why the proposal cannot run against this snapshot, or null when it can. */
-function validateAgainstSnapshot(target: NodeInfo | null, action: AgentAction): string | null {
+export function validateAgainstSnapshot(target: NodeInfo | null, action: AgentAction): string | null {
   if (!target) return `the reference "${action.ref}" is not in the current snapshot`;
   if (!target.enabled) return `the element is disabled`;
   if (target.offscreen) return `the element is off-screen`;
-  if (action.kind === "click" && irreversibleControl(target)) return `pressing "${target.name}" would send, publish, delete or pay, which this agent never does`;
+  const consequential = consequentialReason(action.kind, target.name, action.kind === "select" ? action.value : undefined);
+  if (consequential) return consequential;
   if (!patternsOf(target).includes(action.kind)) {
     return `the element accepts only [${patternsOf(target).join(",") || "nothing"}], not ${action.kind}`;
   }

@@ -332,6 +332,7 @@ export function installMockIfNeeded() {
       return tasks;
     },
     deleteTask: async (id) => (tasks = tasks.filter((t) => t.id !== id)),
+    forgetConversation: async () => ({ journals: 0, payloads: 0 }),
     runTask: async (id) => {
       const set = (t: ScheduledTask) => { tasks = tasks.map((x) => (x.id === id ? t : x)); tkl.forEach((f) => f(t)); };
       const t = tasks.find((x) => x.id === id)!;

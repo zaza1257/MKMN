@@ -1,4 +1,5 @@
 import { withPicker, type PickInfo } from "../core/pick";
+import { frameVerdict, PING_WAIT_MS, SHOWN_AGAIN_NOTICE, STOPPED_NOTICE } from "./frameRecovery";
 import { useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent, lazy, Suspense } from "react";
 import { isLoaded as iconsLoaded, loadIcons } from "../core/page/iconTable";
 import { pageSpecOf } from "../core/page/spec";
@@ -234,6 +235,9 @@ export function ArtifactViewer({ artifact, files, live, unit, stage, drawing, pi
   const [slots, setSlots] = useState<{ key: number; html: string; ready: boolean; focus?: number | null }[]>([]);
   const slotKey = useRef(0);
   const posted = useRef(new Set<number>());
+  // a frame that loads again after its page was written is asked whether it still holds the page (frameRecovery.ts)
+  const pongs = useRef(new Map<number, (key: number | null) => void>());
+  const shownAgain = useRef(new Set<number>());
   const push = (html: string, focus: number | null = null) => setSlots((v) => [...v.filter((x) => x.ready).slice(-1), { key: ++slotKey.current, html, ready: false, focus }]);
   // a deck that is being changed: the frame opens on the first slide that differs from the one shown before, not at the old place
   const deckSeen = useRef<string | null>(null);
@@ -320,6 +324,7 @@ export function ArtifactViewer({ artifact, files, live, unit, stage, drawing, pi
       if (![...(panel.current?.querySelectorAll("iframe") ?? [])].some((f) => f.contentWindow === e.source)) return;
       if (d.npuScroll && typeof d.npuScroll.y === "number") place.current = d.npuScroll;
       if (d.npuPainted) revealRef.current(d.key);
+      if (d.npuPong) pongs.current.get(d.key)?.(d.key);
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
@@ -327,7 +332,24 @@ export function ArtifactViewer({ artifact, files, live, unit, stage, drawing, pi
   // each frame gets its page once: writing the page ends in a load event of the same frame, which must not post it again.
   // The frame says when the page is painted and only then replaces the one on screen (a timer is the way out if it never answers).
   const onFrame = (slot: { key: number; html: string; focus?: number | null }) => (e: SyntheticEvent<HTMLIFrameElement>) => {
-    if (posted.current.has(slot.key)) return;
+    if (posted.current.has(slot.key)) {
+      // a later load: the write's own, or the page left (an error page, a reload). Only our frame page answers with the key.
+      const fr = e.currentTarget;
+      let answered: number | null = null;
+      pongs.current.set(slot.key, (k) => { answered = k; });
+      fr.contentWindow?.postMessage({ npuPing: true }, "*");
+      setTimeout(() => {
+        pongs.current.delete(slot.key);
+        const verdict = frameVerdict(slot.key, answered, shownAgain.current.has(slot.key));
+        if (verdict === "kept") return;
+        if (verdict === "stop") { setNotice(STOPPED_NOTICE); return; }
+        shownAgain.current.add(slot.key);
+        posted.current.delete(slot.key); // the frame page's next load gets the page again
+        setNotice(SHOWN_AGAIN_NOTICE);
+        fr.src = FRAME_SRC;
+      }, PING_WAIT_MS);
+      return;
+    }
     posted.current.add(slot.key);
     e.currentTarget.contentWindow?.postMessage({ html: slot.html, key: slot.key, attended: attendedNow(), still: slow, scroll: place.current, focus: (slot as { focus?: number | null }).focus ?? null }, "*");
     // a finished page gets the keyboard at once (arrow keys of a game), a page still being written must not take it from the chat

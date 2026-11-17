@@ -1,4 +1,5 @@
 import { CHAPTER_MARK, PAGE_MARK } from "./pdf";
+import { inFrame } from "./frames";
 import type { ChatMessage } from "../shared/types";
 
 export interface PdfSection { title: string; from: number; to: number; text: string }
@@ -99,7 +100,7 @@ const range = (s: PdfSection) => (s.from === s.to ? `p. ${s.from}` : `p. ${s.fro
 const pageCountOf = (text: string) => pagesOf(text).at(-1)?.n ?? 0;
 
 /** A PDF too big for the context: the whole text travels as far as the app's main process, which keeps only what the question needs. */
-export const wrapPdfDoc = (name: string, text: string, budget: number) => `<pdfdoc name="${name.replace(/"/g, "'")}" budget="${budget}">\n${text}\n</pdfdoc>`;
+export const wrapPdfDoc = (name: string, text: string, budget: number) => `<pdfdoc name="${name.replace(/"/g, "'")}" budget="${budget}">\n${inFrame(text)}\n</pdfdoc>`;
 const DOC_RE = /<pdfdoc name="([^"]*)" budget="(\d+)">\n([\s\S]*?)\n<\/pdfdoc>/g;
 
 export const hasPdfDocs = (messages: ChatMessage[]) => messages.some((m) => (typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "")).join("")).includes("<pdfdoc "));

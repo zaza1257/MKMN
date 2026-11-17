@@ -1,3 +1,4 @@
+import { inFrame } from "./frames";
 import { isPdfText, wrapPdfDoc } from "./pdfSections";
 import { isDocument } from "./officeRead";
 import { MAX_OFFICE_BYTES } from "./office";
@@ -56,7 +57,7 @@ export function userContent(text: string, attachments: Attachment[], budgetChars
   // a picture whose saved file is gone is said out loud: the model must not believe it was given the image
   const missing = attachments.filter((a) => a.kind === "image" && !a.dataUrl);
   const fitted = fitAttachmentText(texts.map((a) => ({ name: a.name, text: a.text ?? "" })), budgetChars);
-  const docs = fitted.map((f, k) => isPdfText(f.name, texts[k].text ?? "") && f.cut ? wrapPdfDoc(f.name, texts[k].text ?? "", f.text.length) : `<attachment name="${f.name.replace(/"/g, "'")}">\n${f.text}${f.cut ? "\n[…cut to fit the model's context]" : ""}\n</attachment>`).join("\n");
+  const docs = fitted.map((f, k) => isPdfText(f.name, texts[k].text ?? "") && f.cut ? wrapPdfDoc(f.name, texts[k].text ?? "", f.text.length) : `<attachment name="${f.name.replace(/"/g, "'")}">\n${inFrame(f.text)}${f.cut ? "\n[…cut to fit the model's context]" : ""}\n</attachment>`).join("\n");
   const gone = missing.length ? `\n\n[${missing.map((a) => `image "${a.name.replace(/"/g, "'")}" is not available: its saved file could not be read`).join("; ")}]` : "";
   const full = (docs ? `${docs}\n\n${text}` : text) + gone;
   if (!images.length) return full;

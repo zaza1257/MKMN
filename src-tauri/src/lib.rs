@@ -1,6 +1,7 @@
 pub mod accelerators;
 pub mod agent_driver;
 pub mod agent_wire;
+pub mod artifact_frame;
 pub mod battery;
 pub mod bench;
 pub mod capabilities;
@@ -70,6 +71,8 @@ fn create_main_window(
         // that could silently change between versions.
         .data_directory(paths::webview_data_dir())
         .build()?;
+    // A generated page's frame may not navigate away from its own page (artifact_frame.rs).
+    artifact_frame::install_navigation_guard(&window);
     fit_window_to_monitor(&window, preferred, minimum);
     window.show()?;
     Ok(window)
@@ -240,12 +243,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .register_uri_scheme_protocol("artifact", |_ctx, request| {
-            // One page only, at one path, and nothing else: no CSP header is added here, so the
-            // frame's own meta CSP is the only policy it runs under.
+            // One page only, at one path, and nothing else. Its policy is sent as the response
+            // header too (the same text as the page's meta, `artifact_frame::frame_csp`), so it
+            // holds whatever the frame does to its own document.
             let served = || {
-                tauri::http::Response::builder()
+                let mut res = tauri::http::Response::builder()
                     .header(tauri::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
-                    .body(ARTIFACT_FRAME_HTML.as_bytes().to_vec())
+                    .header("X-Content-Type-Options", "nosniff");
+                if let Some(csp) = artifact_frame::frame_csp(ARTIFACT_FRAME_HTML) {
+                    res = res.header("Content-Security-Policy", csp);
+                }
+                res.body(ARTIFACT_FRAME_HTML.as_bytes().to_vec())
             };
             if request.uri().path() != "/frame.html" {
                 tauri::http::Response::builder()

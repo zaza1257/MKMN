@@ -93,6 +93,16 @@
       "scan": ["src/renderer/metricsModel.ts:ObservationPhase"]
     },
     {
+      "id": "settings-writer",
+      "title": "Sidecar settings save",
+      "owner": "sidecar",
+      "userVisible": false,
+      "classification": "not-a-machine",
+      "where": "src/core/settingsWriter.ts:12 (`SaveState`)",
+      "reason": "A label read from two fields (a call in flight, a patch waiting); nothing stores it and nothing moves it by event. The host's settings write is the one writer and its lock is the guard.",
+      "scan": ["src/core/settingsWriter.ts:SaveState"]
+    },
+    {
       "id": "preload",
       "title": "Model preload",
       "owner": "renderer",

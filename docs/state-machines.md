@@ -475,9 +475,9 @@ No forbidden jumps.
 This is the complete inventory the `scripts/lib/lifecycle-scan.mjs` scan looks after. Every
 named state/status/phase/stage/step type, and every status/phase/worker union, found in the
 source must appear here (as a migrated machine or as an inventory entry), and
-`tests/state-machines.test.ts` fails when one does not. 32 lifecycles are listed:
+`tests/state-machines.test.ts` fails when one does not. 33 lifecycles are listed:
 13 migrated, 1 a real machine not migrated yet,
-18 not a state machine.
+19 not a state machine.
 
 ### Migrated (13)
 
@@ -507,13 +507,14 @@ Has states and events but does not use the registry yet. Registered most user-vi
 | --- | --- | --- | --- | --- | --- |
 | `model-switch` | Model switch in Settings (Starting, Warming up, Cancel) | renderer | yes | src/renderer/modelSwitch.ts (`SwitchPhase`, `ModelSwitcher`) | One switch's view: idle, starting, warming, then done (idle), failed or cancelled. It mirrors the registered `server` machine (starting, loading, ready) read from the host and adds only the person's Cancel; registering it would duplicate the server's transitions. |
 
-### Not a state machine (18)
+### Not a state machine (19)
 
 A status label, a boolean, a linear progress value or a one-shot classification with no transitions to guard.
 
 | Id | Title | Owner | User-visible | Where | How it is handled |
 | --- | --- | --- | --- | --- | --- |
 | `metrics` | Observation feed freshness | renderer | yes | src/renderer/metricsModel.ts:176 (`ObservationPhase`) | A pure function of a reading's timestamp, failure count and the clock, recomputed on every render. Nothing stores a phase and nothing fires events, so there is no move to guard. |
+| `settings-writer` | Sidecar settings save | sidecar | no | src/core/settingsWriter.ts:12 (`SaveState`) | A label read from two fields (a call in flight, a patch waiting); nothing stores it and nothing moves it by event. The host's settings write is the one writer and its lock is the guard. |
 | `update` | Application update check | core, renderer | yes | src/core/updater.ts; src/shared/api.ts (`UpdateState`) | Structurally a status chain (checking → current/downloading/ready/error) but the updater is disabled: every method forces the error state and there is no transport. It has no transitions to guard until a real update feed exists. |
 | `install` | Model download and install progress | core, sidecar | yes | src/shared/types.ts (`InstallProgress.phase`); src/core/geniex.ts | A linear progress flow (checking → downloading → done/error/cancelled) where the only changing value is a percentage, not a set of states with events. |
 | `voice-download` | Voice model download progress | core, renderer | yes | src/shared/types.ts (`VoiceDownloadProgress.phase`) | A linear download progress flow (downloading → extracting → done/error/cancelled); no transitions to guard. |

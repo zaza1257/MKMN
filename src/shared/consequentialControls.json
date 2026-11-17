@@ -1,0 +1,17 @@
+{
+  "about": "Controls the window agent never presses, selects or toggles: what they do may not be taken back. Read by the sidecar (src/shared/consequential.ts) and by the native driver at the moment of the action (src-tauri/src/agent_wire.rs). English entries match whole words of the control's name (a phrase matches its words in a row); Arabic entries match anywhere in the name. A control with no name is refused as well: what it does cannot be judged.",
+  "english": [
+    "send", "submit", "post", "publish", "share", "invite", "upload",
+    "delete", "remove", "discard", "erase", "wipe", "destroy", "purge", "empty", "trash", "archive", "overwrite", "replace all", "reset",
+    "pay", "purchase", "buy", "checkout", "check out", "order", "place order", "transfer", "donate", "sell", "trade", "withdraw", "deposit", "book", "reserve", "subscribe", "unsubscribe",
+    "reply all", "forward",
+    "confirm", "ok", "okay", "yes", "approve", "accept", "agree", "allow", "authorize", "authorise", "grant", "sign", "proceed", "continue", "finish", "complete", "apply",
+    "install", "uninstall", "sign out", "log out", "logout", "close account", "deactivate"
+  ],
+  "arabic": [
+    "إرسال", "أرسل", "ارسال", "ارسل", "نشر", "مشاركة", "حذف", "إزالة", "ازالة", "مسح", "تفريغ",
+    "ادفع", "دفع", "شراء", "اشتر", "تحويل", "طلب",
+    "تأكيد", "تاكيد", "أكد", "موافق", "موافقة", "نعم", "قبول", "اعتماد", "سماح", "متابعة", "إنهاء", "تطبيق",
+    "تثبيت", "إلغاء التثبيت", "تسجيل الخروج"
+  ]
+}

@@ -64,6 +64,8 @@ export interface JournalRun {
   pipeline: string;
   startedAt: string;
   resumed: boolean;
+  /** The chat the run served, when it served one: deleting that chat deletes this journal (harness/forget.ts). */
+  conversationId?: string;
 }
 
 /** Written when a run resumes and finds a step that was started and never settled. */

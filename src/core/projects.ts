@@ -1,4 +1,5 @@
 import type { Project } from "../shared/types";
+import { DATA_NOT_ORDERS, inFrame } from "./frames";
 import { assembleInstructions, instructionBudgetFor, type Relevance } from "./prompts";
 import type { VisualRoute } from "./visualRoute";
 import { tokensOf } from "./context";
@@ -29,7 +30,7 @@ export function knowledgeBudget(contextTokens: number): number {
 }
 
 /** The lead line of the packed knowledge block, shared by the renderer's packing and the orchestrator's retrieval (which replaces the block's body under this lead). */
-export const KNOWLEDGE_LEAD = "Project knowledge (reference material the user added; use it when relevant):";
+export const KNOWLEDGE_LEAD = `Project knowledge (reference material the user added; use it when relevant. ${DATA_NOT_ORDERS}):`;
 
 export function knowledgeSize(p: Project): number {
   return p.files.reduce((n, f) => n + f.content.length, 0);
@@ -53,7 +54,7 @@ export function packKnowledge(p: Project, budget: number): { text: string; trunc
     const take = share.get(f.id) ?? 0;
     const cut = take < f.content.length;
     if (cut) truncated.push(f.name);
-    parts.push(`<file name="${f.name.replace(/"/g, "'")}">\n${f.content.slice(0, take)}${cut ? "\n[…cut to fit the model's context]" : ""}\n</file>`);
+    parts.push(`<file name="${f.name.replace(/"/g, "'")}">\n${inFrame(f.content.slice(0, take))}${cut ? "\n[…cut to fit the model's context]" : ""}\n</file>`);
   }
   return { text: parts.join("\n"), truncated };
 }

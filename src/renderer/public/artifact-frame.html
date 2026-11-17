@@ -29,6 +29,10 @@
         parent.postMessage({ npuScroll: at, key: key }, "*");
       }
       function onAttention(e) { if (e.source === parent && e.data && GAP[e.data.npuAttention]) attended = e.data.npuAttention; }
+      // The window asks, after a load it did not expect, whether this frame still holds its page: a page that tried
+      // to leave lands on the browser's error page (the host cancels the navigation), which never answers.
+      function onPing(e) { if (e.source === parent && e.data && e.data.npuPing) parent.postMessage({ npuPong: true, key: key }, "*"); }
+      window.addEventListener("message", onPing);
       window.addEventListener("message", function (e) {
         if (e.source !== parent || !e.data || typeof e.data.html !== "string") return;
         if (GAP[e.data.attended]) attended = e.data.attended;
@@ -37,6 +41,7 @@
         document.write(e.data.html);
         document.close();
         window.addEventListener("message", onAttention); // writing the page dropped every listener of the window: this one is how the window says whether anyone is looking
+        window.addEventListener("message", onPing); // and this one says the page is still here
         if (e.data.still) {
           // a page still being written: nothing moves, so each redraw looks like the page growing, not a page starting over
           var s = document.createElement("style");

@@ -633,11 +633,14 @@ export function App() {
       return leave(id, all.filter((c) => c.id !== id));
     });
     // Undo for a few seconds: one click deletes, one click puts it back in its place.
+    // Once the undo is gone, what the harness kept of the chat (its run journals) goes too.
+    const forget = (convId: string) => { void api().forgetConversation(convId).catch(() => undefined); };
     if (gone && gone.turns.length > 0) {
       if (undoTimer.current) clearTimeout(undoTimer.current);
+      if (undoChat) forget(undoChat.conv.id); // the earlier deletion can no longer be undone
       setUndoChat({ conv: gone, index });
-      undoTimer.current = setTimeout(() => setUndoChat(null), 8000);
-    }
+      undoTimer.current = setTimeout(() => { setUndoChat(null); forget(gone.id); }, 8000);
+    } else if (gone) forget(gone.id);
   };
   const undoDelete = () => {
     if (!undoChat) return;
