@@ -26,7 +26,8 @@ and chats on the PC. This is its first public release.
 - **Projects, scheduled tasks, long-chat summaries**, English and Arabic.
 - **Optional cloud chat** through HUMAIN Fuse and HUMAIN Node, with your own
   API keys stored under Windows DPAPI.
-- **A Windows ARM64 installer** (`MKMN-0.0.1-arm64-Setup.exe`) that bundles the
+- **A Windows ARM64 installer**, built from source (`MKMN-0.0.1-arm64-Setup.exe`,
+  see the [README](../../README.md#5-build-the-installer)), that bundles the
   host, the Node sidecar and the speech runtime, and refuses PCs that are not
   Windows 11 on ARM64.
 

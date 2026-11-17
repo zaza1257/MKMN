@@ -458,7 +458,7 @@ async function* streamAttempt(opts: StreamOptions, id: string): AsyncGenerator<C
     }
     // The server stopped MID-ANSWER ("terminated"): the words already streamed are real output
     // the person watched arrive — the stream ends with them, honestly marked, instead of throwing
-    // the turn away (the b-run's longconv-07/08: "Something went wrong, restart MKMN" for a
+    // the turn away (an on-device test run: "Something went wrong, restart MKMN" for a
     // connection cut, the partial answer left standing unmarked). A finish reason that already
     // arrived means the answer itself was complete; the cut after it is harmless.
     if (finish === null && !receivedDone) cut = String((e as Error).message || "the connection was cut");

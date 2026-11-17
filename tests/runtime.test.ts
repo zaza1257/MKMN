@@ -238,7 +238,7 @@ describe("ServerManager on a port another instance already serves", () => {
   });
 
   /**
-   * From the b-run records: the 8b run's router spent its WHOLE session in
+   * From on-device test runs: the 8b model's router spent its WHOLE session in
    * "The model server did not start". The endpoint was held by a wedged process that
    * answers nothing — so the probe failed AND the spawn could not bind, the child died
    * at once without ever serving, and the restart loop burned its attempts (and the

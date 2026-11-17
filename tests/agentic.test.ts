@@ -86,7 +86,7 @@ describe("context that overflows in the middle of a file", () => {
     expect(n).toBe(1);
     expect((evs.at(-1) as any).stats.finish).toBe("length");
   });
-  it("a stream cut mid-answer ends with the words that arrived, named as cut (the b-run's 'terminated' turns ended as 'Something went wrong, restart MKMN' with the words unmarked)", async () => {
+  it("a stream cut mid-answer ends with the words that arrived, named as cut (on-device test runs' 'terminated' turns ended as 'Something went wrong, restart MKMN' with the words unmarked)", async () => {
     // the b-4b longconv-07/08 records: the model server died mid-answer (undici's
     // "terminated"), the stream threw with words already on the screen, and the turn
     // ended in the generic unknown error telling the person to restart MKMN — the worst

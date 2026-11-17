@@ -89,8 +89,11 @@ internet to draw charts.
 
 ## Install
 
-1. Get `MKMN-0.0.1-arm64-Setup.exe` from the release page, or build it yourself
-   (below).
+1. Build `MKMN-0.0.1-arm64-Setup.exe` yourself: follow
+   [Build and run from source](#build-and-run-from-source) through
+   [step 5](#5-build-the-installer). The
+   [v0.0.1 release](https://github.com/zzahed/MKMN/releases/tag/v0.0.1) has
+   source archives only, no prebuilt installer.
 2. Close any running MKMN and run the installer. It installs `MKMN.exe` with a
    `Runtime\` folder (the Node sidecar and its runtime) next to it and creates
    the shortcuts.
@@ -150,7 +153,7 @@ an x64 Node or Rust under emulation builds the wrong binaries.
 ### 2. Get the source
 
 ```powershell
-git clone https://github.com/zaza1257/MKMN.git MKMN
+git clone https://github.com/zzahed/MKMN.git MKMN
 cd MKMN
 pnpm --ignore-workspace install --frozen-lockfile
 pnpm rebuild esbuild

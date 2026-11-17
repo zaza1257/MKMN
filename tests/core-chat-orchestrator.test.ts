@@ -183,7 +183,7 @@ describe("the chat orchestrator (core, fake host)", () => {
     expect(events.some((e) => e.type === "error")).toBe(false);
   });
 
-  it("a stopped turn's call settles interrupted in the journal, not failed (the b-run's stopped turns journaled 'failed / This operation was aborted' — a person's stop read as a hard failure)", async () => {
+  it("a stopped turn's call settles interrupted in the journal, not failed (stopped turns in on-device test runs journaled 'failed / This operation was aborted' — a person's stop read as a hard failure)", async () => {
     const file = path.join(os.tmpdir(), `orch-abort-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jsonl`);
     let die: ((e: Error) => void) | null = null;
     vi.stubGlobal("fetch", vi.fn((_u: string, init?: RequestInit) => new Promise<Response>((_res, rej) => {

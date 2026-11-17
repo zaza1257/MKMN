@@ -272,7 +272,7 @@ export class ServerManager extends EventEmitter {
     }
     // An adoptable server (the router) whose own spawn died before it ever served: when
     // nothing answers the port either, the endpoint is held by a process that can be
-    // neither probed nor bound (the v2.8.1b runs' wedged holder — the 8b run's router
+    // neither probed nor bound (a wedged holder seen in on-device test runs — the 8b model's router
     // spent its whole session in restarts that never served once). Restarting cannot
     // serve the endpoint and only burns the attempts: fail at once. The next request's
     // start re-probes from scratch — it adopts the moment the holder ever answers, and
