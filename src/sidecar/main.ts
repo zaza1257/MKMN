@@ -1437,7 +1437,7 @@ const routerSortMemory = new SortMemory();
 let routerWarming = false;
 const routerStats = { asked: 0, lastMs: null as number | null, lastError: null as string | null };
 /**
- * One timeout per request (the rule the b-run records broke): after a question to the
+ * One timeout per request (the rule on-device test runs broke): after a question to the
  * router failed or timed out, the request's remaining closed questions are answered null
  * at once while the background warm re-probes; the router's next success closes it. The
  * sort shares one signal, but every other closed question carried its own fresh timeout —
@@ -1658,7 +1658,7 @@ const sidecarHost: ChatHost = {
   ensureServer,
   recoverServer: async (e) => {
     // A stalled ROUTER call must never walk this chat path: collect hands every call the
-    // fail-fast recovery, and a router:warm that stalled (the b-run record) stopped the
+    // fail-fast recovery, and a router:warm that stalled (seen in an on-device test run) stopped the
     // CHAT's model server and asked the host to start the router model in its place —
     // the user's chat model put out mid-turn by the router's own failure. The router's
     // server is this process's own: recycle it here, and only a non-router entry falls

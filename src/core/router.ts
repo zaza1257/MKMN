@@ -62,7 +62,7 @@ export const ROUTER_TIMEOUT_MS = 2000;
 
 /**
  * How long the router breaker stays open after a question went unanswered. The rule the
- * b-run records broke: a router that times out costs at most its short timeout ONCE per
+ * on-device test runs broke: a router that times out costs at most its short timeout ONCE per
  * request — but every closed question of a build gate, a file kind, identity or recall
  * carried its own fresh timeout, so a wedged router (one that accepts the connection and
  * never answers, exactly the state the adopted 18182 server reached mid-run) cost one

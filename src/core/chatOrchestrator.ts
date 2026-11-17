@@ -698,7 +698,7 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
   openTurnBudget(id, turnBudgetOfSettings(host.settings()));
   // A stop marks the turn's run cancelled the moment it happens: the call in flight then
   // settles "interrupted" (the person stopped it) instead of "failed" with the raw abort
-  // message — the b-run's stopped turns journaled "failed / This operation was aborted",
+  // message — stopped turns in an on-device test run journaled "failed / This operation was aborted",
   // a person's stop read as a hard failure. The turn is ending either way.
   ac.signal.addEventListener("abort", () => run.cancel("the turn was stopped"));
   // what the app does before the first request leaves, step by step: the model's own "first token" starts after all of it
@@ -1204,7 +1204,7 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
           const block = `${KNOWLEDGE_LEAD}\n${body}${rest}`;
           // The block rides in the system message's own knowledge block — but the caller may
           // send no system message at all (a bare sidecar call, a headless task): then there
-          // is nothing to replace, and dropping the whole retrieval silently is what the b-8b
+          // is nothing to replace, and dropping the whole retrieval silently is what on-device
           // knowledge turns did (the know step's reply held the fact, the model's request did
           // not, and the model invented facts under the citation instruction). The block the
           // retrieval just built is never dropped: it replaces the packed block, or rides as

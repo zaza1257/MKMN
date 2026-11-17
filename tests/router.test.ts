@@ -123,7 +123,7 @@ describe("the router comes with the packs", () => {
 });
 
 /**
- * From the b-run records: a WEDGED router (one that accepts the connection and
+ * From on-device test runs: a WEDGED router (one that accepts the connection and
  * never answers) re-paid its whole short timeout for EVERY closed question of a turn —
  * the sort shares one signal, but each yes/no of the build gate, the file kind, identity,
  * recall went through its own fresh timeout, ten times 2 s and more on one request. The
@@ -172,7 +172,7 @@ describe("the router breaker: one timeout per request", () => {
 });
 
 /**
- * Root cause of the silent router (the b-run records + live probes): a fresh
+ * Root cause of the silent router (on-device test runs + live probes): a fresh
  * `geniex serve --compute cpu` answers /v1/models and /health about 0.6 s after it is
  * spawned — with NO model loaded — and the model's first load takes about 3.5 s. The
  * router's server is "ready" long before it can answer, so the first one or two asks of
@@ -245,7 +245,7 @@ describe("the breaker is wired in the sidecar's router", () => {
     expect(main).toMatch(/routerWarmGate\.reset\(\)/); // a fresh (spawned or adopted) server must load again
   });
   /**
-   * From the b-8b record ("the model call router:warm failed: the server sent
+   * From an on-device test run ("the model call router:warm failed: the server sent
    * nothing for 45 s ..."): the fail-fast recovery of a ROUTER call walked into the
    * chat host's recovery — it stopped the CHAT's model server and asked the host to
    * start the router model in its place, putting the user's chat model out mid-turn.

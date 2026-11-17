@@ -220,8 +220,8 @@ describe("knowledge retrieval on the request path", () => {
     expect(events.find((event) => event.type === "answer")?.text).toMatch(/couldn't verify/i);
     expect(bodies).toHaveLength(0);
   });
-  it("REGRESSION: the retrieved block rides even when the request carries no renderer system message (the b-8b knowledge turns: the block was built, then silently dropped)", async () => {
-    // The b-run records (real-runs-v2.8.1b-8b.jsonl, know-en-01): the know step packed the
+  it("REGRESSION: the retrieved block rides even when the request carries no renderer system message (on-device knowledge turns: the block was built, then silently dropped)", async () => {
+    // On-device test runs: the know step packed the
     // fact's section, the know step's reply held it (realHit=1) — and the answer model's
     // prompt was 230 tokens. The block is delivered by REPLACING the "Project knowledge"
     // block in a system message the caller was expected to send; a request without one (a
