@@ -1,156 +1,107 @@
 # MKMN AI | مكمن
 
-MKMN runs language models on your laptop's NPU instead of a data centre. It is a
-Windows 11 desktop app for Snapdragon X (ARM64) PCs: chats, answers from your own
-files, Word, Excel and PowerPoint files, small programs and voice conversations
-are handled by a model on the Qualcomm Hexagon NPU through GenieX, and your files
-and chats are stored on the PC. HUMAIN Fuse and HUMAIN Node are there when you
-choose a cloud model for a chat; that chat's messages and attachments then go to
-the provider you picked.
+MKMN is an AI chat app for Windows laptops with a Snapdragon X chip.
+It runs AI models on the laptop's NPU (a chip made for AI), not in the cloud.
+Your chats and files stay on your PC.
 
-The name comes from *makman* (مكمن), Arabic for a reservoir. The app is a
-**Tauri v2** host (Rust + WebView2) with a plain-Node sidecar and a React window.
+The name comes from *makman* (مكمن), the Arabic word for a reservoir.
 
-**Release status: v0.0.1**, the initial public release
+**Release status: v0.0.1**, the first public release
 ([release notes](docs/releases/RELEASE_NOTES_v0.0.1.md)).
 
-NPU execution is a runtime observation on each device, not a guarantee for every
-device or model. The app shows where each model really ran.
+## What you can do with it
 
-## What it does
+- **Chat with an AI model** that runs on your laptop.
+- **Ask questions about your own files.** The answer shows which part of the
+  file it came from.
+- **Make Word, Excel and PowerPoint files.** You do not need Microsoft Office.
+- **See charts, diagrams and quizzes** inside the chat.
+- **Build small programs and games.** MKMN tests them before you see them.
+- **Talk to the AI with your voice**, and hear it answer.
+- **Let the AI work in one window you choose.** It can click and fill in
+  fields. It cannot type with the keyboard, so it can never send anything.
+- **Use English or Arabic.**
 
-- **Runs models on the NPU, and says where they really ran.** Each model is
-  badged NPU, Hybrid (part on the CPU) or CPU. Hybrid and CPU are never picked
-  silently: they need **Allow part-CPU loading** in Settings → Models. A model
-  whose load test failed on this PC is left out of the list, and benchmark
-  results show on each model's row.
-- **Dynamic model packs.** Five packs, from 2B to 24B, each a set of models plus
-  a small router (Qwen3-0.6B, about 0.4 GB) that reads a request and sends it to
-  the right model of the pack. The router runs on the CPU, and moves to the GPU
-  when the CPU is too busy, so the NPU stays free for the chat model.
-- **Two engines, one at a time.** Qualcomm GenieX (v0.11.0 or newer) by default;
-  Microsoft Foundry Local as a second engine with a side-by-side comparison.
-  Only one engine holds the NPU at a time, and a model is released before the
-  next one loads.
-- **Answers from your files, with the source.** A project's files are searched
-  on the device (keyword search, plus an optional multilingual model for
-  questions worded differently or asked in another language), and answers cite
-  the passage they used. A citation to a passage the model never received is
-  flagged. Scanned PDF pages are read with on-device OCR.
-- **Word, Excel and PowerPoint without Office.** The model writes text; MKMN
-  turns it into real .docx, .xlsx and .pptx files, calculates Excel formulas
-  itself, and opens existing Office, OpenDocument and RTF files. A new deck is
-  planned slide by slide, charted only from figures you gave, and each slide is
-  checked before it is kept.
-- **Charts, diagrams, quizzes and sheets drawn in the chat** (Mermaid, KaTeX),
-  checked once the answer is written and sent back to the model when they would
-  not draw.
-- **Programs built in steps.** A request for a game or tool is planned as
-  small units, each written, run and corrected on its own, then the page is
-  played in a sandbox before you see it. Every file keeps its earlier versions.
-- **Voice.** Dictation (Whisper) and voice chat read aloud (Kokoro) that you
-  can interrupt by speaking. Typed replies are read aloud only when you ask.
-- **Computer Use.** You pick one window; the model can click, fill fields and
-  choose options there, but has no keyboard, so it can prepare a message and
-  never send it. Each step is checked against the window afterwards.
-- **Long chats keep going.** Older messages are summarized in the background
-  once a chat fills 65 % of the model's window.
-- **Projects and scheduled tasks**, and requests in English or Arabic.
-- **No self-update and no analytics.** Install new versions yourself. The
-  internet is used for downloads you start (models, GenieX, voice models),
-  Qualcomm's GenieX release feed during setup and when you check for updates,
-  the cloud chats you choose, and Chart.js on generated pages that draw charts.
+You can also choose a cloud model (HUMAIN Fuse or HUMAIN Node) for a chat.
+If you do, that chat's messages and files are sent to that provider.
 
-See the [user guide](docs/guide/user-guide.md) for how to use each part.
+See the [user guide](docs/guide/user-guide.md) for more.
 
-## Requirements
+## What you need
 
-Everything below is either inside the installer or installed from the internet
-the first time it is needed. Settings → Developer → Requirements shows each one,
-whether it is there now, and an Install button for the packages.
+- A laptop with a **Snapdragon X** chip.
+- **Windows 11** (build 22000 or newer).
+- An internet connection the first time, to download an AI model.
 
-| Requirement | Needed for | How it gets there |
-| --- | --- | --- |
-| Windows 11 (build 22000 or later) on ARM64 | **Required** | The installer refuses any other PC before it writes a file |
-| Microsoft Edge WebView2 Runtime | **Required**: draws the window | Part of Windows 11; when Windows has none, the installer downloads Microsoft's bootstrapper, checks its signature and installs it |
-| Node runtime and the app's code | **Required**: the sidecar | Inside the installer |
-| Speech runtime (sherpa-onnx, ARM64) | Dictation, read-aloud | Inside the installer |
-| Qualcomm GenieX **v0.11.0 or newer** | **Required for local inference**: runs models on the NPU | Setup offers it at launch when GenieX is missing, older than v0.11.0 or reports no valid version. It downloads the Windows ARM64 installer listed in Qualcomm's stable release feed, checks its published SHA-256 and signature, and rechecks the installed version before inference is allowed. Skipping leaves local inference off; the rest of the app opens |
-| Qualcomm NPU driver | **Required** for the NPU | Comes with Windows Update |
-| A chat model (and the router model for Dynamic) | **Required for local inference** | Downloaded from the Models library (Hugging Face, Qualcomm AI Hub, ModelScope, Docker Hub) or with a Dynamic pack |
-| Voice models and read-aloud voices | Dictation, voice chat | First-run setup, or the one-click voice install card |
-| Microsoft Foundry Local | Optional second engine | Install button (winget `Microsoft.FoundryLocal`) |
-| Python | Optional: running Python programs, the benchmark's code checks | Install button (winget `Python.Python.3.12`) |
-| LibreOffice | Optional: old .doc/.xls/.ppt, saving as OpenDocument or PDF | Install button (winget `TheDocumentFoundation.LibreOffice`) |
-| Windows OCR language pack | Optional: scanned PDF pages in a language Windows has no OCR for | Windows Settings → Language |
+MKMN sets up the rest for you. When you start it the first time, it asks
+before it downloads anything:
 
-Generated web pages that use Chart.js load it from its CDN, so they need the
-internet to draw charts.
+- **GenieX** (version 0.11.0 or newer) from Qualcomm. It runs the models on
+  the NPU.
+- **An AI model**, from the Models page.
+- **Voice models**, if you want to use your voice.
+
+Some extras are optional: Microsoft Foundry Local (a second way to run models),
+Python and LibreOffice. You can install them later from
+**Settings → Developer → Requirements**.
 
 ## Install
 
 1. Download
    [`MKMN-0.0.1-arm64-Setup.exe`](https://github.com/zzahed/MKMN/releases/download/v0.0.1/MKMN-0.0.1-arm64-Setup.exe)
-   from the [v0.0.1 release](https://github.com/zzahed/MKMN/releases/tag/v0.0.1)
-   (SHA-256 `5e58ca97fd7d85cd671f56e1e534ca94c0082ccdc8e72973160c2941de5bc8ea`),
-   or build it yourself (below).
-2. Close any running MKMN and run the installer. It installs `MKMN.exe` with a
-   `Runtime\` folder (the Node sidecar and its runtime) next to it and creates
-   the shortcuts.
-3. Start MKMN. First-run setup checks GenieX, asks before downloading anything
-   that is missing, and offers the voice models. Choose **Skip local setup** to
-   use cloud chat only.
-4. Open Settings → Models, install a model and click **Use**.
+   from the [v0.0.1 release](https://github.com/zzahed/MKMN/releases/tag/v0.0.1).
+2. Double-click the file to install MKMN.
+3. Windows may show a warning ("Windows protected your PC"). This happens
+   because the installer is not signed. If you trust the file, click
+   **More info**, then **Run anyway**. On a work PC, ask your IT team first.
+4. Open MKMN. Follow the setup steps on the screen.
+5. Go to **Settings → Models**. Pick a model, click **Install**, then
+   click **Use**.
+6. Start chatting.
 
-The installer is not code-signed, so Windows SmartScreen will warn about it.
-Do not disable SmartScreen or enterprise controls to install it; follow your
-organization's software approval process. Uninstalling keeps your MKMN profile
-data. MKMN does not update itself.
+To check the download, its SHA-256 is
+`5e58ca97fd7d85cd671f56e1e534ca94c0082ccdc8e72973160c2941de5bc8ea`.
 
-## Configure
+**Good to know**
 
-No `.env` file or secret is needed to build, test or run MKMN.
+- Each model shows a badge: **NPU** (best), **Hybrid** (part on the CPU) or
+  **CPU** (slowest). Hybrid and CPU models are only used if you turn on
+  **Allow part-CPU loading** in **Settings → Models**.
+- MKMN does not update itself. To update, download and install the new version.
+- MKMN does not collect any usage data.
+- If you uninstall MKMN, your chats and settings are kept.
 
-- **Local models.** Settings → Models lists what can run on this PC. Settings →
-  Speed & memory holds the execution mode, model retention and warm-up options.
-- **Cloud chat (optional).** Open the AI status panel at the bottom of the chat
-  sidebar and use **Chat location** to switch between **Local · This PC**,
-  **Cloud · HUMAIN Fuse** and **Cloud · HUMAIN Node**. Enter each provider's
-  API key under **Cloud Intelligence** in Settings, click **Save key**, then
-  **Test connection and load models**. Keys are protected with Windows DPAPI
-  for your Windows account, are never read from the repository, and are left
-  out of settings exports. A cloud chat sends its conversation and attachments
-  to the provider you selected, and to no one else.
-- **Where data lives.** Settings are in `%LOCALAPPDATA%\MKMN`, chats and
-  workspace data in `%APPDATA%\MKMN`. Models already managed by GenieX stay
-  where GenieX keeps them.
+## Use a cloud model (optional)
 
-These environment variables are optional overrides for development; leave them
-unset for normal use:
+1. Open **Settings → Cloud Intelligence**.
+2. Paste your HUMAIN API key. Click **Save key**.
+3. Click **Test connection and load models**.
+4. In the chat sidebar, open the AI status panel. Under **Chat location**,
+   pick **Cloud · HUMAIN Fuse** or **Cloud · HUMAIN Node**.
 
-| Variable | Effect |
-| --- | --- |
-| `MKMN_ARM64_LIBS` | Folder holding the ARM64 import libraries (`lib\`) for the Rust build |
-| `GENIEX_PATH` | Use this `geniex.exe` instead of the installed one (still version-checked) |
-| `GENIEX_DATADIR` | GenieX model cache folder |
-| `GENIEX_QAIRT_LIB` | Folder of a QAIRT runtime to pass to GenieX |
+Your key is stored safely on your PC, protected by your Windows account.
+
+## Where your data is saved
+
+- Settings: `%LOCALAPPDATA%\MKMN`
+- Chats and files: `%APPDATA%\MKMN`
 
 ## Build and run from source
 
-Build on a Snapdragon X PC running Windows 11. Everything runs natively on ARM64:
-an x64 Node or Rust under emulation builds the wrong binaries.
+This part is for developers. You only need it if you want to change the code. Do it on a Snapdragon X
+laptop with Windows 11.
 
-### 1. Tools
+### 1. Install the tools
 
-| Tool | Version | Notes |
+| Tool | Version | Note |
 | --- | --- | --- |
-| Node.js, Windows ARM64 build | 24 LTS or later | `node -p "process.arch"` must print `arm64` |
-| pnpm | 10.26.1 | The lockfile is pnpm's; do not use npm or yarn |
-| Rust (rustup) | 1.90 or later | `rustup target add aarch64-pc-windows-msvc` |
-| Visual Studio Build Tools | with **MSVC ARM64 build tools** and a **Windows 11 SDK** | Supplies the ARM64 import libraries (see step 3) |
-| NSIS | 3 | Only for the installer; `makensis` on the `PATH` or in `Program Files (x86)\NSIS` |
+| Node.js (Windows **ARM64**) | 24 or newer | `node -p "process.arch"` must print `arm64` |
+| pnpm | 10.26.1 | Do not use npm or yarn |
+| Rust (rustup) | 1.90 or newer | Then run `rustup target add aarch64-pc-windows-msvc` |
+| Visual Studio Build Tools | latest | Add **MSVC ARM64 build tools** and a **Windows 11 SDK** |
+| NSIS | 3 | Only needed to make the installer |
 
-### 2. Get the source
+### 2. Get the code
 
 ```powershell
 git clone https://github.com/zzahed/MKMN.git MKMN
@@ -159,102 +110,80 @@ pnpm --ignore-workspace install --frozen-lockfile
 pnpm rebuild esbuild
 ```
 
-`pnpm` runs install scripts only for `esbuild` (`onlyBuiltDependencies` in
-`package.json`); the notice about skipping `onnxruntime-node` is expected.
+A message about skipping `onnxruntime-node` is normal.
 
-### 3. Give the Rust build the ARM64 import libraries
+### 3. Add the ARM64 library files
 
-The host links with `rust-lld`, which needs one folder holding the ARM64 `.lib`
-files: the Windows SDK's `Lib\<version>\um\arm64` and `ucrt\arm64`, and MSVC's
-`VC\Tools\MSVC\<version>\lib\arm64` (`msvcrt.lib`, `vcruntime.lib`). Copy them
-into a `lib` folder in **one** of these places; the build looks there in this order:
+The Rust build needs some `.lib` files from Visual Studio and the Windows SDK:
 
-1. `src-tauri\native-sdk\lib`: run
-   `.\scripts\setup-arm64-libs.ps1 -Source "C:\path\to\arm64-libs"` to link it there
-   (ignored by Git)
-2. `$env:MKMN_ARM64_LIBS\lib`
-3. `%USERPROFILE%\.arm64-libs\lib`
+- from the Windows SDK: `Lib\<version>\um\arm64` and `Lib\<version>\ucrt\arm64`
+- from MSVC: `VC\Tools\MSVC\<version>\lib\arm64`
 
-When none is found, `cargo` prints a warning naming these places and the link fails.
-
-### 4. Check, test and run
+Copy them all into one folder named `lib`. Then run:
 
 ```powershell
-pnpm typecheck                # renderer and sidecar
-pnpm test                     # Vitest suites
-cargo test --manifest-path src-tauri\Cargo.toml
-pnpm start                    # builds the sidecar and opens the app with tauri dev
+.\scripts\setup-arm64-libs.ps1 -Source "C:\path\to\arm64-libs"
 ```
 
-The app needs GenieX v0.11.0 or newer for local models, as the installed app does.
-`pnpm dev:renderer` serves the window alone in a browser; it shows only a
-"desktop runtime required" card, because the interface runs inside the desktop app.
+Instead, you can put the `lib` folder in `%USERPROFILE%\.arm64-libs\`, or set
+`MKMN_ARM64_LIBS` to the folder that holds it.
 
-### 5. Build the installer
+### 4. Test and run
 
 ```powershell
-pnpm dist                     # same as: .\scripts\Build-Windows.ps1
+pnpm typecheck
+pnpm test
+pnpm start
 ```
 
-The script checks the tools above, then installs the locked dependencies, type-checks,
-runs the tests (`-SkipTests` skips them), regenerates `THIRD_PARTY_LICENSES.txt`,
-builds the renderer, the sidecar and the Rust host, runs the Rust tests, copies a
-Node runtime and the sidecar's dependencies next to it (`Bundle-Sidecar.ps1`),
-runs `makensis`, and finally `Validate-Installer.ps1 -Release`, which unpacks the
-installer read-only and checks that every packaged file is the one just built.
+`pnpm start` opens the app. You need GenieX 0.11.0 or newer to use local models.
 
-To run only the packaging step after the earlier steps have been built:
+### 5. Make the installer
+
+```powershell
+pnpm dist
+```
+
+This runs `scripts\Build-Windows.ps1`. It checks your tools, runs the tests,
+builds everything and makes `dist\MKMN-<version>-arm64-Setup.exe`.
+Logs are in `dist\build-logs`. Add `-SkipTests` to the script to skip the tests.
+
+If you only want to remake the installer from files you already built:
 
 ```powershell
 makensis /DVERSION=$(node -p "require('./package.json').version") installer.nsi
 ```
 
-Output: `dist\MKMN-<version>-arm64-Setup.exe`, with one log per step and a summary
-in `dist\build-logs\build.result.json`. The script starts its helper scripts with
-`-ExecutionPolicy Bypass` for that process only; it never changes the machine or
-user execution policy.
+**Tip:** if a test about "state machines" fails on Windows, Git may have changed
+the line endings. Run `git config core.autocrlf false`, then check out the
+files again.
 
-The manual `.github/workflows/release.yml` builds the app on a Windows ARM64
-runner and uploads the installer as a CI artifact only. It does not push tags,
-create GitHub releases, sign code, or validate hardware inference.
+## Project folders
 
-## Project layout
-
-| Path | What is there |
+| Folder | What is inside |
 | --- | --- |
-| `src/core` | Logic shared by the sidecar and the window (chat, build engine, router, office files, knowledge, engines) |
-| `src/sidecar` | The plain-Node sidecar the Tauri host runs (`protocol.ts` is its protocol) |
-| `src/renderer` | The React window; `tauriBridge.ts` is its bridge to the host |
-| `src/shared` | Types, the settings schema, the path layout (`paths.ts`), the state machine registry |
-| `src-tauri` | The Rust host: window, tray, power, supervisor of the model servers, shutdown |
-| `tests` | Vitest suites (`pnpm exec vitest run`); Rust tests live beside their code |
-| `scripts` | Build, packaging, check and generator scripts |
-| `docs` | Documentation, organized by kind: see [docs/README.md](docs/README.md) |
-| `build`, `crates`, `installer.nsi` | Icons and configurator page, the patched Windows resource crate, the NSIS installer script |
+| `src/core` | The main logic |
+| `src/sidecar` | The Node process the app runs in the background |
+| `src/renderer` | The app window (React) |
+| `src/shared` | Shared types and settings |
+| `src-tauri` | The Rust host: window, tray and model servers |
+| `tests` | Tests (`pnpm test`) |
+| `scripts` | Build and check scripts |
+| `docs` | Documentation ([start here](docs/README.md)) |
 
-The Tauri host (Rust) owns the window, tray, power management and the GenieX
-model-server process; the supervised sidecar carries the TypeScript logic
-(catalog, installs, chat orchestration, voice, sandbox, scheduled tasks).
+## Help and contributing
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks to run and the rules the
-test suite enforces. Do not add personal profiles, documents, credentials or
-model weights to the repository.
-
-## Brand assets
-
-The name, logo, palette and the rules for privacy and offline claims are in
-[docs/design/BRAND.md](docs/design/BRAND.md). The SVG masters are
-`build/mkmn-*.svg`; `node scripts/generate-brand-assets.mjs` makes every icon
-from them. No third-party logo or proprietary symbol is used.
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before you send a change.
+- Do not add personal files, passwords, API keys or model files to the
+  repository.
+- Brand rules (name, logo, colours) are in [docs/design/BRAND.md](docs/design/BRAND.md).
 
 ## License
 
-MIT; see [LICENSE](LICENSE). MKMN is derived from
-[Open NPU](https://github.com/disposablecameraapp/Open-NPU) (MIT), whose
-copyright notice is retained in `LICENSE`. See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and `THIRD_PARTY_LICENSES.txt`
-for dependencies and the terms of external runtimes and models. GenieX, the NPU
-driver, Foundry Local and downloaded models are not part of this repository and
-keep their publishers' licenses.
+MKMN uses the MIT license. See [LICENSE](LICENSE).
+
+MKMN is based on [Open NPU](https://github.com/disposablecameraapp/Open-NPU)
+(MIT). Its copyright notice is kept in `LICENSE`. Other parts and their
+licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+`THIRD_PARTY_LICENSES.txt`. GenieX, the NPU driver, Foundry Local and the AI
+models are not part of this project. They keep their own licenses.
