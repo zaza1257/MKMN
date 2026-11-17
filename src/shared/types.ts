@@ -898,6 +898,9 @@ export interface VoiceModel {
   family: VoiceFamily;
   /** Release archive name without ".tar.bz2" (k2-fsa/sherpa-onnx releases). */
   archive: string;
+  /** SHA-256 (hex) and exact size of that archive: a download that does not match is never extracted. */
+  sha256?: string;
+  bytes?: number;
   sizeMB: number;
   languages: string;
   note: string;

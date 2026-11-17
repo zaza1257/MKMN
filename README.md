@@ -6,8 +6,8 @@ Your chats and files stay on your PC.
 
 The name comes from *makman* (مكمن), the Arabic word for a reservoir.
 
-**Release status: v0.0.1**, the first public release
-([release notes](docs/releases/RELEASE_NOTES_v0.0.1.md)).
+**Release status: v0.0.2**, security and reliability fixes
+([release notes](docs/releases/RELEASE_NOTES_v0.0.2.md)).
 
 ## What you can do with it
 
@@ -47,9 +47,8 @@ Python and LibreOffice. You can install them later from
 
 ## Install
 
-1. Download
-   [`MKMN-0.0.1-arm64-Setup.exe`](https://github.com/zzahed/MKMN/releases/download/v0.0.1/MKMN-0.0.1-arm64-Setup.exe)
-   from the [v0.0.1 release](https://github.com/zzahed/MKMN/releases/tag/v0.0.1).
+1. Download `MKMN-<version>-arm64-Setup.exe` from the
+   [latest release](https://github.com/zzahed/MKMN/releases/latest).
 2. Double-click the file to install MKMN.
 3. Windows may show a warning ("Windows protected your PC"). This happens
    because the installer is not signed. If you trust the file, click

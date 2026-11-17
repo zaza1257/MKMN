@@ -1561,6 +1561,9 @@ export function createTauriApi(): OpenNpuApi {
       setLocalJson("mkmn.tasks", list);
       return list;
     },
+    async forgetConversation(convId: string): Promise<{ journals: number; payloads: number }> {
+      return sidecarCall<{ journals: number; payloads: number }>("forgetConversation", convId);
+    },
     async runTask(id: string): Promise<void> {
       await sidecarCall("runTask", id);
     },

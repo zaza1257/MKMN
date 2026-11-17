@@ -534,6 +534,11 @@ fn perform(
     if disabled {
         return Err(err("notEnabled", "the element is disabled"));
     }
+    // The sidecar judged the snapshot's name; this judges the element's name NOW,
+    // so a label that changed after the observe ("Next" turned "Send") is refused.
+    if let Some(why) = agent_wire::consequential_reason(action, property_name(element).as_deref()) {
+        return Err(err("consequential", why));
+    }
     match action {
         agent_wire::AgentAction::Click { .. } => {
             let p: IUIAutomationInvokePattern = pattern(element, UIA_InvokePatternId)

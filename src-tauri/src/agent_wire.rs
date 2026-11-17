@@ -14,7 +14,7 @@ use serde_json::Value;
 /// The pinned driver build the host accepts. Any other name, version or protocol
 /// is refused at the handshake with both versions in the error.
 pub const DRIVER_NAME: &str = "agent-desktop";
-pub const DRIVER_VERSION: &str = "1.0.0";
+pub const DRIVER_VERSION: &str = "1.1.0";
 pub const DRIVER_PROTOCOL: u32 = 1;
 
 // ---------------------------------------------------------------- frames
@@ -213,6 +213,111 @@ pub fn format_ref(observe_gen: u64, index: usize) -> String {
     format!("e{observe_gen}.{index}")
 }
 
+// ---------------------------------------------------------------- consequential controls
+
+/// The ONE list of controls the agent never presses, toggles or selects (shared
+/// with the sidecar's `src/shared/consequential.ts`). The driver checks it at the
+/// moment of the action against the element's LIVE name, so a label that changed
+/// between the snapshot and the act is still judged.
+const CONSEQUENTIAL_JSON: &str = include_str!("../../src/shared/consequentialControls.json");
+
+struct ConsequentialList {
+    english: Vec<Vec<String>>,
+    arabic: Vec<String>,
+    /// The list did not parse: every press, toggle and select is refused.
+    broken: bool,
+}
+
+fn consequential_list() -> &'static ConsequentialList {
+    static LIST: std::sync::OnceLock<ConsequentialList> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        // A list that does not parse must fail closed: an empty list would let
+        // every press through, so `broken` refuses them all instead.
+        let v: Value = serde_json::from_str(CONSEQUENTIAL_JSON).unwrap_or(Value::Null);
+        let strings = |k: &str| -> Vec<String> {
+            v.get(k)
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default()
+        };
+        let english: Vec<Vec<String>> =
+            strings("english").iter().map(|p| words(p)).filter(|p| !p.is_empty()).collect();
+        let broken = english.is_empty();
+        ConsequentialList { english, arabic: strings("arabic"), broken }
+    })
+}
+
+/// Lowercase runs of ASCII letters and digits (the same split as the sidecar's).
+fn words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            cur.push(c.to_ascii_lowercase());
+        } else if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The longest list entry the name matches, or None.
+pub fn consequential_word(name: &str) -> Option<String> {
+    let list = consequential_list();
+    let w = words(name);
+    let mut best: Option<String> = None;
+    for p in &list.english {
+        if p.len() <= w.len() && w.windows(p.len()).any(|win| win == p.as_slice()) {
+            let hit = p.join(" ");
+            if best.as_ref().map_or(true, |b| hit.len() > b.len()) {
+                best = Some(hit);
+            }
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+    for a in &list.arabic {
+        if name.contains(a.as_str()) && best.as_ref().map_or(true, |b| a.len() > b.len()) {
+            best = Some(a.clone());
+        }
+    }
+    best
+}
+
+/// Why the action is refused as consequential, or None. click and toggle are
+/// judged on the element's name (no name: refused), select on the chosen item.
+pub fn consequential_reason(action: &AgentAction, live_name: Option<&str>) -> Option<String> {
+    let judged = matches!(action, AgentAction::Click { .. } | AgentAction::Toggle { .. } | AgentAction::Select { .. });
+    if judged && consequential_list().broken {
+        return Some("the driver's list of consequential controls could not be read, so no press is allowed".into());
+    }
+    match action {
+        AgentAction::Click { .. } | AgentAction::Toggle { .. } => {
+            let n = live_name.unwrap_or("").trim();
+            if n.is_empty() {
+                return Some("the control has no name, so what it does cannot be judged; the person presses it".into());
+            }
+            consequential_word(n).map(|hit| {
+                format!("\"{n}\" may send, confirm, delete or pay (\"{hit}\"), which this agent never does; the person presses it")
+            })
+        }
+        AgentAction::Select { value, .. } => {
+            let v = value.trim();
+            if v.is_empty() {
+                return None;
+            }
+            consequential_word(v).map(|hit| {
+                format!("choosing \"{v}\" may send, confirm, delete or pay (\"{hit}\"), which this agent never does; the person chooses it")
+            })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,4 +408,29 @@ mod tests {
         let back: ObserveResult = serde_json::from_value(v).unwrap();
         assert_eq!(back.observe_gen, 4);
     }
+    #[test]
+    fn consequential_controls_match_the_sidecar_cases() {
+        assert!(!consequential_list().broken, "the shared list must parse");
+        for name in ["Send", "Send now", "OK", "Confirm", "Yes", "Pay $20", "Place order", "Empty Trash", "Sign out", "إرسال", "حذف", "تأكيد", "موافق"] {
+            assert!(consequential_word(name).is_some(), "{name}");
+        }
+        for name in ["Bold", "Save draft", "Insert", "Sender", "Postpone", "Bookmark", "Okapi", "Cancel", "New message", "Reply"] {
+            assert!(consequential_word(name).is_none(), "{name}");
+        }
+        assert_eq!(consequential_word("Place  ORDER now").as_deref(), Some("place order"));
+    }
+
+    #[test]
+    fn a_press_on_an_unnamed_or_consequential_control_is_refused_and_expand_is_not() {
+        let click = AgentAction::Click { reference: "e1.0".into() };
+        assert!(consequential_reason(&click, None).unwrap().contains("no name"));
+        assert!(consequential_reason(&click, Some("  ")).is_some());
+        assert!(consequential_reason(&click, Some("Send")).is_some());
+        assert!(consequential_reason(&click, Some("Bold")).is_none());
+        let pick = AgentAction::Select { reference: "e1.0".into(), value: "Delete".into() };
+        assert!(consequential_reason(&pick, Some("Actions")).is_some());
+        let expand = AgentAction::Expand { reference: "e1.0".into() };
+        assert!(consequential_reason(&expand, Some("Send")).is_none());
+    }
 }
+

@@ -26,6 +26,63 @@
 export interface CitedSection {
   file: string;
   place: string;
+  /** The text that actually rode with the request (cut where the request cut it), when known. */
+  text?: string;
+}
+
+/** Arabic-Indic and Eastern Arabic-Indic digits as ASCII. */
+function asciiDigits(s: string): string {
+  return s.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+}
+
+/** The figures of a text in one written form: thousands separators gone, trailing decimal zeros gone. */
+function figuresOf(s: string): string[] {
+  return (asciiDigits(s).match(/\d[\d,٬]*(?:[.٫]\d+)?/g) ?? []).map((f) => {
+    const plain = f.replace(/[,٬]/g, "").replace(/٫/, ".");
+    return plain.includes(".") ? plain.replace(/0+$/, "").replace(/\.$/, "") : plain;
+  });
+}
+
+/** A figure worth checking: two digits or more, or a decimal (a lone "3 reasons" is not a sourced fact). */
+const MATERIAL = (f: string) => f.replace(".", "").length >= 2 || f.includes(".");
+
+/**
+ * The figures a cited sentence states that none of its cited sections holds as
+ * written. This is a support check of the NUMBERS only: a marker that stands
+ * still says that a source rode, not that it says what the sentence says, and a
+ * figure the model rewrote ("1.2 million" for "1,200,000") is reported too —
+ * reported, never removed, so the person checks it against the source.
+ * Sections without their text (an extractive quote) are not judged.
+ */
+export function unsupportedFigures(answer: string, loaded: CitedSection[]): { figure: string; sources: number[] }[] {
+  const out: { figure: string; sources: number[] }[] = [];
+  const seen = new Set<string>();
+  const known = new Map<number, Set<string>>();
+  const figuresIn = (n: number) => {
+    if (!known.has(n)) known.set(n, new Set(figuresOf(loaded[n - 1]?.text ?? "")));
+    return known.get(n)!;
+  };
+  const sentences = answer.split("\n").filter((l) => !OWN_SOURCES_LINE.test(l.trim())).join("\n").split(/(?<=[.!?؟])\s+|\n+/);
+  for (const sentence of sentences) {
+    const sources = [...sentence.matchAll(SOURCE_MARK_ALL)].map((m) => Number(m[1])).filter((n) => n >= 1 && n <= loaded.length);
+    if (!sources.length || sources.some((n) => loaded[n - 1]?.text === undefined)) continue;
+    const claim = sentence.replace(SOURCE_MARK_ALL, " ");
+    for (const f of figuresOf(claim).filter(MATERIAL)) {
+      if (sources.some((n) => figuresIn(n).has(f))) continue;
+      const key = `${f}|${sources.join(",")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ figure: f, sources });
+    }
+  }
+  return out;
+}
+
+/** The notice the chat shows for unsupported figures, or null. */
+export function unsupportedNotice(found: { figure: string; sources: number[] }[]): string | null {
+  if (!found.length) return null;
+  const list = found.slice(0, 6).map((u) => `${u.figure} [source ${u.sources.join(", ")}]`).join(", ");
+  return `${found.length === 1 ? "A figure" : `${found.length} figures`} in this answer ${found.length === 1 ? "is" : "are"} not written that way in the passage it cites: ${list}${found.length > 6 ? " and more" : ""}. Check ${found.length === 1 ? "it" : "them"} against the source.`;
 }
 
 /** The citation marker and its number, as the instructions ask the model to write it. */

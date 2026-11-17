@@ -6,7 +6,7 @@ import type { CatalogEntry, ChatEvent, ChatMessage, ChatOptions, HardwareProfile
 import { runChatOrchestrator, type ChatHost, type Served } from "../src/core/chatOrchestrator";
 import { buildSystemPrompt, knowledgeBudget } from "../src/core/projects";
 import { appendInstructions, type Relevance } from "../src/core/prompts";
-import { CITATIONS_INSTRUCTIONS, citeAnswer, citationGuardStep, spokenOf, type CitedSection } from "../src/core/cite";
+import { CITATIONS_INSTRUCTIONS, citeAnswer, citationGuardStep, spokenOf, unsupportedFigures, unsupportedNotice, type CitedSection } from "../src/core/cite";
 import { packSections, type RetrSection } from "../src/core/knowledge/retrieve";
 import { identityGuardStep } from "../src/core/harness/identity";
 import { promptTokens } from "../src/core/context";
@@ -154,9 +154,9 @@ describe("the packed sections carry the citation's shape", () => {
 
   it("packSections returns the loaded sections in source order with their places (the orchestrator fills its citation list from this)", () => {
     const packed = packSections([sec(1), sec(2), sec(3)], [2, 0], 10_000);
-    expect(packed.loaded).toEqual([
-      { file: "book.pdf", place: "p. 3" },
-      { file: "book.pdf", place: "p. 1" },
+    expect(packed.loaded).toMatchObject([
+      { file: "book.pdf", place: "p. 3", text: sec(3).text },
+      { file: "book.pdf", place: "p. 1", text: sec(1).text },
     ]);
     // and the body numbers them in the same order
     expect(packed.body.indexOf('source="1"')).toBeLessThan(packed.body.indexOf('source="2"'));
@@ -166,7 +166,8 @@ describe("the packed sections carry the citation's shape", () => {
   it("a section that does not fit is not in the loaded list (a source that never rode cannot be cited)", () => {
     const big: RetrSection = { ...sec(9), text: "X".repeat(5_000) };
     const packed = packSections([sec(1), big], [1, 0], 300);
-    expect(packed.loaded).toEqual([{ file: "book.pdf", place: "p. 1" }]); // the small section rode, the big one was left out
+    expect(packed.loaded).toMatchObject([{ file: "book.pdf", place: "p. 1" }]);
+    expect(packed.loaded).toHaveLength(1); // the small section rode, the big one was left out
     expect(packed.leftOut).toBe(1);
   });
 });
@@ -259,6 +260,37 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("a cited sentence's figures are checked against what its sources hold", () => {
+  // 2026-11-17 review: the guard proved a [source N] marker named a section that rode, not that
+  // the section says what the sentence says. The figures of a cited sentence are now compared
+  // with the cited passage's text, and a figure it does not hold is reported (never removed).
+  const loaded: CitedSection[] = [
+    { file: "budget.xlsx", place: "Sheet1", text: "The xylophone budget is 1,997 dinars. Growth was 12.50% over 2025." },
+    { file: "plan.pdf", place: "p. 2", text: "The garden budget is ٣١٠٠٠ dinars." },
+  ];
+
+  it("passes figures the cited passage holds, written with or without separators, zeros or Arabic digits", () => {
+    expect(unsupportedFigures("The budget is 1997 dinars [source 1]. Growth was 12.5% [source 1].", loaded)).toEqual([]);
+    expect(unsupportedFigures("The garden needs 31,000 dinars [source 2].", loaded)).toEqual([]);
+  });
+
+  it("names a figure the cited passage does not hold, with the sources it cites", () => {
+    expect(unsupportedFigures("The budget is 1998 dinars [source 1]. The garden needs 31000 [source 2].", loaded)).toEqual([{ figure: "1998", sources: [1] }]);
+    expect(unsupportedFigures("Both cost 5000 [source 1][source 2].", loaded)).toEqual([{ figure: "5000", sources: [1, 2] }]);
+  });
+
+  it("does not judge uncited sentences, small counts, or sections whose text is unknown", () => {
+    expect(unsupportedFigures("I found 3 parts. The total is 777.", loaded)).toEqual([]);
+    expect(unsupportedFigures("It has 3 rooms [source 1].", loaded)).toEqual([]);
+    expect(unsupportedFigures("The quote says 4242 [source 1].", [{ file: "q", place: "p" }])).toEqual([]);
+  });
+
+  it("the notice names the figures and asks the person to check them", () => {
+    expect(unsupportedNotice([])).toBeNull();
+    expect(unsupportedNotice([{ figure: "1998", sources: [1] }])).toBe("A figure in this answer is not written that way in the passage it cites: 1998 [source 1]. Check it against the source.");
+  });
+});
+
 describe("citations on the turn", () => {
   it("the answer's request carries the citation rules when sections were loaded, and an invented marker is corrected on the screen", async () => {
     const content = longPdf(true);
@@ -287,6 +319,23 @@ describe("citations on the turn", () => {
     const answer = steps.filter((s) => s.id === "t-1").at(-1); // the streamed answer is the turn's own step
     expect(answer?.reply).not.toContain("[source 999]");
     expect(answer?.reply).toContain("[source 1]");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a cited figure the section does not hold is named in a notice, and a held one is not", async () => {
+    const content = longPdf(true);
+    const sys = packedSystem(content);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cite-"));
+    for (const [reply, flagged] of [["The xylophone budget is 1998 dinars [source 1].", true], ["The xylophone budget is 1997 dinars [source 1].", false]] as const) {
+      const events: ChatEvent[] = [];
+      const bodies: Body[] = [];
+      const fetchFn = scriptedFetch(bodies, [{ starts: LOCATOR_SYS, reply: "1" }], reply);
+      vi.stubGlobal("fetch", fetchFn);
+      await runChatOrchestrator(fakeHost({ events, journalFile: path.join(dir, `t-${flagged}.jsonl`), settings: baseSettings(), fetchFn, knowledgeDir: dir }), "t-f", ENTRY.id, MSGS(sys, "What is the xylophone budget?"), OPTS(content));
+      const notices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text).filter((t) => /not written that way/.test(t));
+      expect(notices, reply).toHaveLength(flagged ? 1 : 0);
+      if (flagged) expect(notices[0]).toContain("1998 [source 1]");
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

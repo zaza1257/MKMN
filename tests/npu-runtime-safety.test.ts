@@ -160,6 +160,17 @@ async function downloadFixture(handler: RequestListener) {
 }
 
 describe("runtime download resumption", () => {
+  // 2026-11-17 review: the downloader took http as readily as https, and followed a redirect down to http.
+  // Every hop, redirects included, goes through the same check at the top of `get`.
+  it("refuses a plain-http address before connecting", async () => {
+    let hits = 0;
+    const { url, dest } = await downloadFixture((_req, res) => { hits++; res.writeHead(200, { "Content-Length": 2 }); res.end("ok"); });
+    await expect(downloadFile(url, dest, () => undefined)).rejects.toThrow(/only https/);
+    expect(hits).toBe(0);
+    const src = readFileSync("src/core/download.ts", "utf8");
+    expect(src).toMatch(/redirects > 6.*\r?\n.*only https/);
+  });
+
   it("restarts an unsatisfiable partial instead of promoting it", async () => {
     const ranges: Array<string | undefined> = [];
     const { url, dest } = await downloadFixture((req, res) => {
@@ -168,7 +179,7 @@ describe("runtime download resumption", () => {
       else { res.writeHead(200, { "Content-Length": 8 }); res.end("complete"); }
     });
     writeFileSync(dest + ".part", "wrong old file");
-    await downloadFile(url, dest, () => undefined);
+    await downloadFile(url, dest, () => undefined, undefined, { allowHttp: true });
     expect(ranges).toEqual(["bytes=14-", undefined]);
     expect(readFileSync(dest, "utf8")).toBe("complete");
   });
@@ -180,7 +191,7 @@ describe("runtime download resumption", () => {
     });
     writeFileSync(dest, "previous");
     writeFileSync(dest + ".part", "abc");
-    await expect(downloadFile(url, dest, () => undefined)).rejects.toThrow("Content-Range");
+    await expect(downloadFile(url, dest, () => undefined, undefined, { allowHttp: true })).rejects.toThrow("Content-Range");
     expect(readFileSync(dest, "utf8")).toBe("previous");
     expect(readFileSync(dest + ".part", "utf8")).toBe("abc");
   });
@@ -191,7 +202,7 @@ describe("runtime download resumption", () => {
       res.end("def");
     });
     writeFileSync(dest + ".part", "abc");
-    await downloadFile(url, dest, () => undefined);
+    await downloadFile(url, dest, () => undefined, undefined, { allowHttp: true });
     expect(readFileSync(dest, "utf8")).toBe("abcdef");
   });
 
@@ -200,7 +211,7 @@ describe("runtime download resumption", () => {
       res.writeHead(416); res.end();
     });
     writeFileSync(dest, "previous");
-    await expect(downloadFile(url, dest, () => undefined)).rejects.toThrow("416");
+    await expect(downloadFile(url, dest, () => undefined, undefined, { allowHttp: true })).rejects.toThrow("416");
     expect(readFileSync(dest, "utf8")).toBe("previous");
   });
 
@@ -211,7 +222,7 @@ describe("runtime download resumption", () => {
     });
     writeFileSync(dest, "previous");
     writeFileSync(dest + ".part", "abc");
-    await expect(downloadFile(url, dest, () => undefined)).rejects.toThrow("Content-Range");
+    await expect(downloadFile(url, dest, () => undefined, undefined, { allowHttp: true })).rejects.toThrow("Content-Range");
     expect(readFileSync(dest, "utf8")).toBe("previous");
   });
 
@@ -222,7 +233,7 @@ describe("runtime download resumption", () => {
     });
     writeFileSync(dest, "previous");
     writeFileSync(dest + ".part", "abc");
-    await expect(downloadFile(url, dest, () => undefined)).rejects.toThrow("incomplete byte range");
+    await expect(downloadFile(url, dest, () => undefined, undefined, { allowHttp: true })).rejects.toThrow("incomplete byte range");
     expect(readFileSync(dest, "utf8")).toBe("previous");
   });
 });

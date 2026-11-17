@@ -1,9 +1,10 @@
-import { ChildProcess, execFile, fork } from "child_process";
+import { ChildProcess, fork } from "child_process";
 import { EventEmitter } from "events";
 import * as fs from "fs";
 import * as https from "https";
 import * as path from "path";
 import { FriendlyError, SpeakChunk, VoiceDownloadProgress, VoiceModel, VoiceModelView, VoiceSettings, VoiceStatus } from "../shared/types";
+import { installVoiceArchive } from "./voiceInstall";
 import { VOICE_MODELS, sttConfig, ttsConfig, voiceModel, voiceModelUrl, FileList } from "../core/voiceModels";
 
 export function listTree(dir: string, out: FileList = []): FileList {
@@ -242,6 +243,7 @@ export class VoiceService extends EventEmitter {
     const m = voiceModel(id);
     const emit = (p: Omit<VoiceDownloadProgress, "id">) => this.emit("download", { id, ...p } as VoiceDownloadProgress);
     if (!m) return Promise.reject(new Error("Unknown voice model"));
+    if (!m.sha256) return Promise.reject(new Error(`${m.name} has no pinned SHA-256, so it cannot be downloaded`));
     const dir = this.dirFor(m);
     fs.mkdirSync(this.modelsRoot, { recursive: true });
     const archive = path.join(this.modelsRoot, `${m.id}.tar.bz2.part`);
@@ -285,21 +287,12 @@ export class VoiceService extends EventEmitter {
         await get(voiceModelUrl(m));
         if (cancelled) { emit({ phase: "cancelled", percent: null }); return; }
         emit({ phase: "extracting", percent: null });
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.mkdirSync(dir, { recursive: true });
-        // tar.exe ships with Windows 10+ and reads .tar.bz2
-        // an archive tar cannot read is deleted: resuming onto it would never repair it
-        await new Promise<void>((res, rej) => execFile("tar", ["-xjf", archive, "-C", dir, "--strip-components=1"], { windowsHide: true }, (err, _o, se) => {
-          if (!err) return res();
-          fs.rmSync(archive, { force: true });
-          rej(new Error(se || err.message));
-        }));
-        fs.rmSync(archive, { force: true });
-        fs.writeFileSync(path.join(dir, ".complete"), new Date().toISOString());
+        // checked against the catalog's SHA-256 and size, extracted to a staging folder, then promoted
+        await installVoiceArchive(archive, m, dir);
         emit({ phase: "done", percent: 100 });
       } catch (e) {
         if (cancelled) { emit({ phase: "cancelled", percent: null }); return; }
-        emit({ phase: "error", percent: null, error: fe("voice-download", `Could not download ${m.name}`, "Check your connection and disk space, then try again; the download resumes.", (e as Error).message) });
+        emit({ phase: "error", percent: null, error: fe("voice-download", `Could not download ${m.name}`, "Check your connection and disk space, then try again. A download that failed its check starts over.", (e as Error).message) });
       } finally {
         this.downloads.delete(id);
       }

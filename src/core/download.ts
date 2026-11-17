@@ -2,11 +2,15 @@ import * as fs from "fs";
 import * as http from "http";
 import * as https from "https";
 
-/** Resumable download to a file with progress. Follows redirects; throws on HTTP errors. */
-export function downloadFile(url: string, dest: string, onPercent: (p: number | null) => void, signal?: { cancelled: boolean }): Promise<void> {
+/** Resumable download to a file with progress. Follows redirects; throws on HTTP errors.
+ *  https only, at every hop (a redirect to plain http is refused); `allowHttp` is for the
+ *  tests' local server. The caller checks what was downloaded (the GenieX installer: its
+ *  published SHA-256, then its signature) — a resumed file is never trusted on its own. */
+export function downloadFile(url: string, dest: string, onPercent: (p: number | null) => void, signal?: { cancelled: boolean }, opts: { allowHttp?: boolean } = {}): Promise<void> {
   const part = dest + ".part";
   const get = (u: string, redirects = 0, retriedRange = false): Promise<void> => new Promise((resolve, reject) => {
     if (redirects > 6) return reject(new Error("Too many redirects"));
+    if (!u.startsWith("https:") && !(opts.allowHttp && u.startsWith("http:"))) return reject(new Error(`Download refused: only https addresses are downloaded (${u.split(":")[0]})`));
     const have = fs.existsSync(part) ? fs.statSync(part).size : 0;
     const lib = u.startsWith("https:") ? https : http;
     const req = lib.get(u, { headers: { "User-Agent": "MKMN", ...(have ? { Range: `bytes=${have}-` } : {}) } }, (res) => {

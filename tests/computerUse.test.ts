@@ -22,7 +22,7 @@ import type { AgentRunEvent, NodeInfo, ObserveResult } from "../src/shared/agent
 /** A fake observe snapshot of a little compose window: a field and a Send button. */
 function snapshot(gen: number, fieldValue: string, fieldPatterns = ["setValue"]): ObserveResult {
   const field: NodeInfo = { ref: `e${gen}.0`, role: "Edit", name: "Message", value: fieldValue, className: "Edit", enabled: true, offscreen: false, rect: [10, 10, 200, 40], patterns: fieldPatterns };
-  const send: NodeInfo = { ref: `e${gen}.1`, role: "Button", name: "Apply", className: "Button", enabled: true, offscreen: false, rect: [10, 60, 60, 24], patterns: ["click"] };
+  const send: NodeInfo = { ref: `e${gen}.1`, role: "Button", name: "Preview", className: "Button", enabled: true, offscreen: false, rect: [10, 60, 60, 24], patterns: ["click"] };
   return { window: { hwnd: 42, pid: 7, title: "Compose", process: "notepad.exe", className: "Notepad" }, observeGen: gen, focused: true, nodes: [field, send], truncated: false };
 }
 
@@ -101,7 +101,7 @@ describe("the Computer Use loop", () => {
       if (n === 1) {
         // The proposal quotes content only the tree could have shown.
         expect(user).toContain('Edit "Message"');
-        expect(user).toContain('Button "Apply"');
+        expect(user).toContain('Button "Preview"');
         return JSON.stringify({ kind: "setValue", ref: refOf(user, "Edit", "Message"), text: "Draft: meeting notes" });
       }
       return JSON.stringify({ kind: "done", summary: 'The draft is in the Message field.' });
@@ -298,7 +298,7 @@ describe("the Computer Use loop", () => {
   it("stops at the step limit and settles unresolved", async () => {
     const d = fakeDriver();
     // A toggle-less button clicked forever: every act runs, none verifies.
-    const { model } = fakeModel((n, user) => JSON.stringify({ kind: "click", ref: refOf(user, "Button", "Apply") }));
+    const { model } = fakeModel((n, user) => JSON.stringify({ kind: "click", ref: refOf(user, "Button", "Preview") }));
     const { events, emit } = setup({ driver: d.driver, model });
     const out = await runAgentLoop({ runId: "r7", hwnd: 42, task: "t", driver: d.driver, model, emit, signal: ac().signal, limits: { maxSteps: 3 } });
 
@@ -547,7 +547,7 @@ describe("the observe renderer", () => {
     obs.nodes[1].state = undefined;
     const text = renderObserve(obs);
     expect(text).toContain('e4.0 Edit "Message" value="hello" [setValue]');
-    expect(text).toContain('e4.1 Button "Apply" [click]');
+    expect(text).toContain('e4.1 Button "Preview" [click]');
   });
 
   it("renders a node whose patterns field is absent (the real driver omits an empty vec)", () => {

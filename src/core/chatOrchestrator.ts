@@ -64,7 +64,7 @@ import type { Embedder } from "./knowledge/embed";
 import { openVectorIndex } from "./knowledge/vectors";
 import { vectorEmbedder } from "./knowledge/vectorModel";
 import { asksOwnership, COVERAGE_MIN, figurePassage, locatorMessagesFor, mergeByBestRank, namesPeriod, outlineLines, ownershipPassage, packSections, placeOf, QUERY_STOP, queryCoverage, STRONG_COVERAGE, STRONG_MAX, STRONG_OUTLINE_CHARS, STRONG_RATIO, type RetrSection } from "./knowledge/retrieve";
-import { citeAnswer, citationGuardStep } from "./cite";
+import { citeAnswer, citationGuardStep, unsupportedFigures, unsupportedNotice, type CitedSection } from "./cite";
 import { FOUNDRY_MIN_TOKENS } from "./benchRunner";
 import { appendInstructions, type InstructionBlock, type Relevance } from "./prompts";
 import { folderInstructions, type FolderCall } from "./folderTools";
@@ -246,6 +246,7 @@ function startBackgroundCompaction(host: ChatHost, id: string, convId: string, e
   const scope = `bg-${String(convId).replace(/[^A-Za-z0-9_-]/g, "_")}-${Date.now().toString(36)}`;
   const run = createLiveRun({
     pipeline: "compaction",
+    conversationId: convId,
     runId: `compaction-${scope}`,
     journalFile: host.harnessJournalFile?.() ?? (process.env.VITEST ? null : undefined),
   });
@@ -657,7 +658,7 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
   // The sections the retrieval loads onto the request, as citations name them. The
   // retrieval runs AFTER the run was created, so the citation hook reads this
   // array at step time (a mutable closure, src/core/cite.ts).
-  const loadedSections: { file: string; place: string }[] = [];
+  const loadedSections: CitedSection[] = [];
   // The run as the screen draws it: the steps as they settle
   // (onStep, after each is journaled), and once more at the end with the
   // verdict. The budget is the turn's account — every call it made, however deep
@@ -678,6 +679,7 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
   };
   const run = createLiveRun({
     pipeline: "chat",
+    ...(opts.convId ? { conversationId: String(opts.convId) } : {}),
     runId: `chat-${String(id).replace(/[^A-Za-z0-9_-]/g, "_")}-${Date.now().toString(36)}`,
     journalFile: host.harnessJournalFile?.() ?? (process.env.VITEST ? null : undefined),
     // the hooks: the identity guard rides first in the run's own hook path, the
@@ -1330,6 +1332,7 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
     const scopedRun = async function* <R>(pipeline: string, mk: (sub: LiveRun) => AsyncGenerator<ChatEvent, R>): AsyncGenerator<ChatEvent, R> {
       const sub = createLiveRun({
         pipeline,
+        ...(opts.convId ? { conversationId: String(opts.convId) } : {}),
         runId: `${pipeline}-${String(id).replace(/[^A-Za-z0-9_-]/g, "_")}-${Date.now().toString(36)}`,
         journalFile: host.harnessJournalFile?.() ?? (process.env.VITEST ? null : undefined),
         offloadBytes: offloadThreshold(srv.status().nctx ?? 4096), // the writer replies (whole files) are the turn's biggest payloads
@@ -1350,6 +1353,7 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
     const agentOwnRun = async function* (index: number, mk: () => AsyncGenerator<ChatEvent>): AsyncGenerator<ChatEvent> {
       const sub = createLiveRun({
         pipeline: "agent",
+        ...(opts.convId ? { conversationId: String(opts.convId) } : {}),
         runId: `agent-${String(id).replace(/[^A-Za-z0-9_-]/g, "_")}-${index}-${Date.now().toString(36)}`,
         journalFile: host.harnessJournalFile?.() ?? (process.env.VITEST ? null : undefined),
         offloadBytes: offloadThreshold(srv.status().nctx ?? 4096),
@@ -1452,6 +1456,9 @@ export async function runChatOrchestrator(host: ChatHost, id: string, entryId: s
       // corrects the message as a whole)
       const cited = citeAnswer(answer, loadedSections);
       if (cited.text !== answer) { answer = cited.text; host.send({ id, type: "replace", text: answer }); }
+      // a cited sentence whose figures its cited passage does not hold is named, never rewritten
+      const unsupported = unsupportedNotice(unsupportedFigures(answer, loadedSections));
+      if (unsupported) host.send({ id, type: "notice", text: unsupported });
       // a known calculator (compound interest, a loan) is drawn from a tested chart when the model wrote none that draws: small models fail at this JSON
       try {
         const lastAsk = [...base].reverse().find((m) => m.role === "user");

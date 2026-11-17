@@ -1,4 +1,4 @@
-// Generates docs/MKMN_FEATURE_TEST_MATRIX_0.0.1.md from the source inventory.
+// Generates docs/MKMN_FEATURE_TEST_MATRIX_0.0.2.md from the source inventory.
 // Run `node scripts/generate-feature-matrix.mjs --write` after adding a command,
 // method, setting, screen or script; `--check` fails when the
 // committed matrix is stale.
@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { featureInventory } from "./feature-matrix.mjs";
 
-const OUT = "docs/MKMN_FEATURE_TEST_MATRIX_0.0.1.md";
+const OUT = "docs/MKMN_FEATURE_TEST_MATRIX_0.0.2.md";
 
 const cell = (value) => String(value).replace(/\|/g, "\\|");
 const row = (id, name, area, evidence, result) => `| ${id} | ${cell(name)} | ${cell(area)} | ${cell(evidence)} | ${result} |`;
@@ -95,6 +95,7 @@ const SIDECAR_AREA = (name) => {
   if (/^(adaptiveStatus|foundry)/.test(name)) return "Engines";
   if (/^(compiledContexts|speedsByRef|speedsById|resolveModelIdentity)$/.test(name)) return "Model data";
   if (name === "convertLegacyDoc") return "Documents";
+  if (name === "forgetConversation") return "Privacy";
   if (/^(knowledge(Status|Build)|vectorModel(Status|Install|Remove))$/.test(name)) return "Knowledge";
   if (name === "wikimediaImage") return "Pictures";
   if (name === "testWebSearch") return "Web search";
@@ -120,6 +121,7 @@ const SIDECAR_EVIDENCE = {
   Engines: "tests/foundry.test.ts; tests/foundryAdmin.test.ts; tests/adaptiveCompute.test.ts",
   "Model data": "tests/modelIdentity.test.ts; tests/speeds.test.ts; tests/compiled-context-ipc.test.ts",
   Documents: "tests/officeRead.test.ts",
+  Privacy: "tests/forget-conversation.test.ts",
   Knowledge: "tests/knowledge-vectors.test.ts (vector path, store, pinned install); tests/multilingual-search.test.tsx; tests/knowledge-panel.test.ts; tests/knowledge-lifecycle.test.ts",
   Pictures: "tests/wikimedia.test.ts",
   "Web search": "manual check (needs a provider)",
@@ -294,7 +296,7 @@ export function matrixText(root = process.cwd()) {
     ["Build status uses the generated three-state name", "tests/build.test.ts", "PASS"],
     ["English and Arabic only, with a named allowlist", "tests/language.test.ts; node scripts/check-language.mjs", "PASS"],
     ["Full automated suite", "pnpm typecheck; pnpm test; cargo test", "Automated release checks"],
-    ["Version 0.0.1 in every manifest", "tests/version.test.ts", "CONTRACT"],
+    ["Version 0.0.2 in every manifest", "tests/version.test.ts", "CONTRACT"],
     ["HUMAIN chat, secure credentials and provider selection", "tests/humain.test.ts; tests/humain-settings.test.tsx; tests/humain-model-selection.test.ts; tests/chat-send-guard.test.tsx", "CONTRACT"],
     ["Grouped Settings, provider search, keyboard navigation and chat location", "tests/settings-ui.test.ts; tests/navigation.test.tsx; tests/chat-send-guard.test.tsx; tests/brandAssets.test.ts", "CONTRACT"],
   ];
@@ -330,9 +332,9 @@ export function matrixText(root = process.cwd()) {
   });
 
   const lines = [];
-  lines.push("# MKMN AI v0.0.1 — feature test matrix");
+  lines.push("# MKMN AI v0.0.2 — feature test matrix");
   lines.push("");
-  lines.push("MKMN 0.0.1 requires Qualcomm GenieX v0.11.0 or newer for local inference and checks it before any GenieX server starts or is adopted. This inventory is generated from source.");
+  lines.push("MKMN 0.0.2 requires Qualcomm GenieX v0.11.0 or newer for local inference and checks it before any GenieX server starts or is adopted. This inventory is generated from source.");
   lines.push("");
   lines.push(`Generated from ${inv.tauri.length} host commands, ${inv.sidecar.length} sidecar methods, ${inv.tabs.length} Settings groups, ${inv.sections.length} Settings sections, ${inv.rows.length} Settings rows, ${inv.smart.length} Smart functions, ${inv.screens.length} screens and ${inv.scripts.length} scripts.`);
   lines.push("");

@@ -125,7 +125,8 @@ describe("the scanned flag in the index and the citations", () => {
     const s: RetrSection = { fileId: "f", file: "scan.pdf", title: "page", text: "recognized words", page: 4, scanned: true };
     const packed = packSections([s], [0], 1000);
     expect(packed.body).toContain('place="p. 4, scanned text"');
-    expect(packed.loaded).toEqual([{ file: "scan.pdf", place: "p. 4, scanned text" }]);
+    expect(packed.loaded).toMatchObject([{ file: "scan.pdf", place: "p. 4, scanned text" }]);
+    expect(packed.loaded).toHaveLength(1);
   });
 
   it("the store keeps the flag (version 3), and an older store is rebuilt, never trusted half", () => {

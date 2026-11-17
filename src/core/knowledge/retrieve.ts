@@ -6,6 +6,7 @@
  * orchestrator (chatOrchestrator.ts) owns the calls, the run step and the
  * offload store; the renderer may reuse the shapes to show what was loaded.
  */
+import { inFrame } from "../frames";
 import { parseLocatorReply } from "../pdfSections";
 import { sectionsOf, tokenize, type KnowledgeFileLike } from "./index";
 
@@ -226,9 +227,9 @@ export const SECTION_CUT = "[…section cut to fit the knowledge budget]";
  * in source order with their places (the citation check reads this: a source
  * that never rode cannot be cited).
  */
-export function packSections(sections: RetrSection[], picked: number[], budget: number): { body: string; used: number; leftOut: number; loaded: { file: string; place: string }[]; loadedIdx: number[] } {
+export function packSections(sections: RetrSection[], picked: number[], budget: number): { body: string; used: number; leftOut: number; loaded: { file: string; place: string; text: string }[]; loadedIdx: number[] } {
   const parts: string[] = [];
-  const loaded: { file: string; place: string }[] = [];
+  const loaded: { file: string; place: string; text: string }[] = [];
   /** The positions (into `sections`) of what actually rode: two sections may share a file and a place. */
   const loadedIdx: number[] = [];
   let left = budget;
@@ -239,14 +240,15 @@ export function packSections(sections: RetrSection[], picked: number[], budget: 
     const head = `<section source="${n + 1}" file="${s.file.replace(/"/g, "'")}" place="${placeOf(s).replace(/"/g, "'")}">`;
     const foot = "</section>";
     if (s.text.length + head.length + foot.length + 2 <= left) {
-      parts.push(`${head}\n${s.text}\n${foot}`);
+      parts.push(`${head}\n${inFrame(s.text)}\n${foot}`);
       left -= s.text.length + head.length + foot.length + 2;
-      loaded.push({ file: s.file, place: placeOf(s) });
+      loaded.push({ file: s.file, place: placeOf(s), text: s.text });
       loadedIdx.push(i);
     } else if (left > 400) {
-      parts.push(`${head}\n${s.text.slice(0, Math.max(0, left - head.length - foot.length - SECTION_CUT.length - 3))}\n${SECTION_CUT}\n${foot}`);
+      const cut = s.text.slice(0, Math.max(0, left - head.length - foot.length - SECTION_CUT.length - 3));
+      parts.push(`${head}\n${inFrame(cut)}\n${SECTION_CUT}\n${foot}`);
       left = 0;
-      loaded.push({ file: s.file, place: placeOf(s) });
+      loaded.push({ file: s.file, place: placeOf(s), text: cut });
       loadedIdx.push(i);
     } else leftOut++;
   }

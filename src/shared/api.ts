@@ -433,6 +433,8 @@ export interface OpenNpuApi {
   tasks(): Promise<ScheduledTask[]>;
   saveTask(t: ScheduledTask): Promise<ScheduledTask[]>;
   deleteTask(id: string): Promise<ScheduledTask[]>;
+  /** Removes what the harness kept of a deleted chat (its run journals and payloads). */
+  forgetConversation(convId: string): Promise<{ journals: number; payloads: number }>;
   runTask(id: string): Promise<void>;
   onTasks(cb: (t: ScheduledTask) => void): () => void;
   onArtifacts(cb: () => void): () => void;

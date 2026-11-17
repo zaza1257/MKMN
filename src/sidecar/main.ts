@@ -6,11 +6,13 @@
  * as plain Node. Nothing here may import window-shell code — that is the rule
  * that keeps this process a plain Node program.
  */
+import { journalDir } from "../core/harness/journal";
+import { forgetConversation } from "../core/harness/forget";
 import { taskProjectView } from "../core/taskKnowledge";
 import { raceAbort } from "../core/abortable";
-import { fallbackSettingsWrite } from "../core/settingsFallback";
+import { HostSettingsWriter } from "../core/settingsWriter";
 import { approvalBody } from "../core/approval";
-import { guardedFetch } from "../core/netGuard";
+import { pinnedGet } from "../core/netGuard";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { npuResetLaunchCommand, npuResetOutcome } from "../core/npuReset";
 import { execFile } from "child_process";
@@ -134,12 +136,17 @@ const writeJson = (file: string, v: unknown) => {
   // where one could rename or remove the other's in-flight file.
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(v, null, 2));
-  try {
-    fs.renameSync(tmp, file);
-  } catch {
-    // rename over an existing file can fail on some systems: fall back to a direct write
-    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to clean */ }
-    fs.writeFileSync(file, JSON.stringify(v, null, 2));
+  // A rename over a file another program holds open (an antivirus scan) can fail for a
+  // moment on Windows: it is tried again, never replaced by a direct write that a crash
+  // would leave half-written.
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(tmp, file); return; } catch (e) {
+      if (attempt >= 4) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to clean */ }
+        throw e;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
   }
 };
 
@@ -160,39 +167,33 @@ function settings(): any {
   return settingsCache.value;
 }
 
-/** Top-level merge into the settings file (the same semantics as the Rust `save_settings_cmd`).
- * The Rust host is the ONE authoritative writer of settings.json — its locked read-merge-write
- * is serialized against the webview's own save path — so this sidecar hands its patch to the
- * host instead of running a second, racing writer over the same file. The patch lands in the
- * local cache immediately (readers see it at once); if the host call fails, the merged value is
- * still written locally (unique temp name, atomic rename) rather than lost. */
+/** Top-level merge into the settings (the same semantics as the Rust `save_settings_cmd`).
+ * The Rust host is the ONE writer of settings.json — its locked read-merge-write is
+ * serialized against the webview's own save path — so this sidecar hands its patch to the
+ * host and never writes the file itself. The patch lands in the local cache at once
+ * (readers see it); a patch the host could not take stays pending and is retried
+ * (`HostSettingsWriter`, tests/settings-writer.test.ts). A headless `--ask` run has no
+ * host: its changes live for that run only, and the log says so. */
+const settingsWriter = new HostSettingsWriter({
+  save: (patch) => dispatcher.callHost((m) => { void write(m); }, "saveSettings", [patch], 30_000),
+  onSaved: (result) => {
+    // the host returns the full merged settings: adopt them, so nothing this
+    // process reads drifts from what the one writer actually stored
+    // (with what was submitted while this call was in flight on top: it is not saved yet, but it is the newest value)
+    if (result && typeof result === "object") settingsCache = { mtime: settingsMtime(), value: { ...result, ...settingsWriter.unsaved() } };
+  },
+  log: (line) => console.error(line),
+});
+let headlessSettingsNoted = false;
 function saveSettings(patch: Record<string, unknown>): any {
-  const merged = { ...readJson<Record<string, unknown>>(settingsFile(), {}), ...patch };
+  const merged = { ...settings(), ...patch };
   settingsCache = { mtime: settingsMtime(), value: merged };
-  const viaHost = () => dispatcher.callHost((m) => { void write(m); }, "saveSettings", [patch], 30_000);
-  void viaHost()
-    .catch(() => new Promise((r) => setTimeout(r, 2000)).then(viaHost)) // one more try through the host
-    .then((result) => {
-      if (result && typeof result === "object") {
-        // the host returns the full merged settings: adopt them, so nothing this
-        // process reads drifts from what the authoritative writer actually stored
-        settingsCache = { mtime: settingsMtime(), value: result };
-      }
-    })
-    .catch(() => {
-      // Last resort: this patch alone, merged into the file AS IT IS NOW (never the
-      // snapshot read before the request), and never over a file that is not a valid
-      // settings object (tests/settings-fallback.test.ts).
-      try {
-        fallbackSettingsWrite(() => {
-          if (!fs.existsSync(settingsFile())) return { kind: "missing" };
-          try {
-            const v = JSON.parse(fs.readFileSync(settingsFile(), "utf8"));
-            return v && typeof v === "object" && !Array.isArray(v) ? { kind: "object", value: v } : { kind: "unusable" };
-          } catch { return { kind: "unusable" }; }
-        }, (v) => writeJson(settingsFile(), v), patch);
-      } catch { /* nothing more to do */ }
-    });
+  if (headlessMode) {
+    if (!headlessSettingsNoted) console.error("[settings] headless run: setting changes are kept for this run only (the app's host is the one writer of settings.json)");
+    headlessSettingsNoted = true;
+    return merged;
+  }
+  settingsWriter.submit(patch);
   return merged;
 }
 
@@ -280,7 +281,7 @@ async function hardware(refresh = false): Promise<HardwareProfile> {
   if (!rawHardwareCache || refresh) {
     try {
       rawHardwareCache = parseRawHardware(await ps(HARDWARE_SCRIPT));
-      writeJson(PATHS.hardwareFile, { raw: rawHardwareCache });
+      try { writeJson(PATHS.hardwareFile, { raw: rawHardwareCache }); } catch { /* the cache file is a convenience; the reading stands */ }
     } catch {
       rawHardwareCache = rawHardwareCache ?? {
         cpuName: os.cpus()[0]?.model ?? "Unknown CPU",
@@ -329,21 +330,6 @@ const saveCustom = (e: any) => {
 };
 
 // ---- network helpers (mirrors of the desktop main process)
-
-async function readCapped(r: Response, cap: number): Promise<Buffer> {
-  const reader = r.body?.getReader?.();
-  if (!reader) return Buffer.from(await r.arrayBuffer());
-  const parts: Uint8Array[] = [];
-  let n = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value);
-    n += value.length;
-    if (n > cap) { try { await reader.cancel(); } catch { /* the socket closes when it does */ } break; }
-  }
-  return Buffer.concat(parts.map((p) => Buffer.from(p)), n).subarray(0, cap);
-}
 
 /** Bytes as they arrive over JSON: an array of numbers, or an object with numeric keys. */
 function asBytes(v: unknown): Uint8Array | null {
@@ -414,13 +400,13 @@ dispatcher.register("resolveModel", async (input: string) => {
 dispatcher.register("fetchLibrary", async (url: string) => {
   if (typeof url !== "string" || !/^https:\/\//i.test(url) || url.length > 500) return { ok: false, error: "A library must come from an https address." };
   try {
-    // the same guard as web pages: no redirect to this PC or the local network
-    const r = await guardedFetch((u, i) => fetch(u, { ...i, signal: AbortSignal.timeout(20_000) }), (host) => dnsLookup(host, { all: true }), [])(url);
-    if (!r.ok) return { ok: false, error: `The server answered ${r.status}.` };
-    const source = (await readCapped(r, 600_001)).toString("utf8");
-    if (source.length > 600_000) return { ok: false, error: "This library is over 600 KB: too big to keep with a skill." };
+    // https only, no redirect to this PC or the local network, each address checked by the connection's own lookup
+    const r = await pinnedGet(url, { lookup: (host) => dnsLookup(host, { all: true }), maxBytes: 600_000, timeoutMs: 20_000 });
+    if (r.status < 200 || r.status >= 300) return { ok: false, error: `The server answered ${r.status}.` };
+    if (r.truncated) return { ok: false, error: "This library is over 600 KB: too big to keep with a skill." };
+    const source = r.body.toString("utf8");
     if (/^\s*<(!doctype|html)/i.test(source)) return { ok: false, error: "The address gives a web page, not a JavaScript or CSS file." };
-    return { ok: true, source, kind: /\.css(\?|$)/i.test(url) || /^text\/css/i.test(r.headers.get("content-type") ?? "") ? "css" : "js" };
+    return { ok: true, source, kind: /\.css(\?|$)/i.test(url) || /^text\/css/i.test(String(r.headers["content-type"] ?? "")) ? "css" : "js" };
   } catch (e) { return { ok: false, error: `Could not download it: ${(e as Error).message}` }; }
 });
 
@@ -3294,6 +3280,13 @@ dispatcher.register("saveTask", (t: ScheduledTask) => {
   return taskStore.list();
 });
 
+// Deleting a chat deletes the run journals and payloads it left in Workspace\harness (harness/forget.ts).
+dispatcher.register("forgetConversation", (convId: string) => {
+  if (typeof convId !== "string" || !convId || convId.length > 200) return { journals: 0, payloads: 0 };
+  const r = forgetConversation(convId, journalDir());
+  if (r.journals || r.payloads) console.error(`[harness] a deleted chat's records were removed: ${r.journals} journal(s), ${r.payloads} payload(s)`);
+  return r;
+});
 dispatcher.register("deleteTask", (id: string) => { taskStore.remove(String(id)); return taskStore.list(); });
 
 dispatcher.register("runTask", (id: string) => {

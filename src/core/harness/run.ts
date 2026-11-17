@@ -96,6 +96,8 @@ export interface RunOptions {
   runId?: string;
   /** The pipeline the run serves ("build", "compaction", "knowledge", ...), for the journal header. */
   pipeline: string;
+  /** The chat this run serves: written in the journal header so deleting the chat deletes the journal. */
+  conversationId?: string;
   /** Explicit journal file; the default is journalPath(runId); `null` runs without a journal (tests). */
   journalFile?: string | null;
   /** A step reply bigger than this (bytes, from offloadThreshold(window)) is offloaded to a file next to the journal: the record keeps the preview and the pointer, never the whole text. Offload needs a journal folder; with `journalFile: null` it is off. */
@@ -170,7 +172,7 @@ export function createRun(defs: StepDef<unknown, unknown>[], opts: RunOptions): 
   function ensureRunning(): void {
     if (state === "queued") {
       state = moveRun(state, "start");
-      journalWrite({ type: "run", runId, pipeline: opts.pipeline, startedAt: new Date().toISOString(), resumed: false });
+      journalWrite({ type: "run", runId, pipeline: opts.pipeline, startedAt: new Date().toISOString(), resumed: false, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) });
       runHeaderWritten = true;
     }
   }
@@ -496,7 +498,7 @@ export function createLiveRun(opts: RunOptions): LiveRun {
   function ensureRunning(): void {
     if (state === "queued") {
       state = moveRun(state, "start");
-      journalWrite({ type: "run", runId, pipeline: opts.pipeline, startedAt: new Date().toISOString(), resumed: false });
+      journalWrite({ type: "run", runId, pipeline: opts.pipeline, startedAt: new Date().toISOString(), resumed: false, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) });
     }
   }
 
