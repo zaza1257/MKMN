@@ -89,11 +89,11 @@ internet to draw charts.
 
 ## Install
 
-1. Build `MKMN-0.0.1-arm64-Setup.exe` yourself: follow
-   [Build and run from source](#build-and-run-from-source) through
-   [step 5](#5-build-the-installer). The
-   [v0.0.1 release](https://github.com/zzahed/MKMN/releases/tag/v0.0.1) has
-   source archives only, no prebuilt installer.
+1. Download
+   [`MKMN-0.0.1-arm64-Setup.exe`](https://github.com/zzahed/MKMN/releases/download/v0.0.1/MKMN-0.0.1-arm64-Setup.exe)
+   from the [v0.0.1 release](https://github.com/zzahed/MKMN/releases/tag/v0.0.1)
+   (SHA-256 `5e58ca97fd7d85cd671f56e1e534ca94c0082ccdc8e72973160c2941de5bc8ea`),
+   or build it yourself (below).
 2. Close any running MKMN and run the installer. It installs `MKMN.exe` with a
    `Runtime\` folder (the Node sidecar and its runtime) next to it and creates
    the shortcuts.
