@@ -59,16 +59,24 @@ test that fails on the 0.0.1 code.
 ## What was verified
 
 - On this tree: the type check, the full Vitest suite and `cargo test`.
-- On the installed app, on a Snapdragon X2 Elite PC, with an internal build
-  carrying the same fixes (not with a 0.0.2 installer): the driver refused
-  "Yes" in a real Windows message box and pressed "No"; the preview sent its
-  policy header, cancelled a page's navigation with no request leaving, and
-  showed the page again; a tampered voice download was refused on its SHA-256
-  and a real one installed after resuming.
+- The installer: `MKMN-0.0.2-arm64-Setup.exe` (52,175,567 bytes, SHA-256
+  `64C3028DF47ABFC2C75EF1C6C34BAF78388E7DDE49BCFB2E8EF50B67A2B5E9A7`) built
+  from this tree by `scripts\Build-Windows.ps1` (all 16 steps passed, tests
+  included), installed silently on a Snapdragon X2 Elite PC; `MKMN.exe`
+  reports 0.0.2.
+- On that installed 0.0.2:
+  - the driver (1.1.0) refused "Yes" in a real Windows message box and
+    pressed "No";
+  - the preview frame's response carries its policy header; a page that sets
+    `location.href` after a real click was cancelled by the host, shown again
+    with its text and a notice; a page that keeps leaving stopped with a
+    notice after one retry; no request reached the other address;
+  - a voice download resumed onto 1 MB of random bytes was refused on its
+    SHA-256 and deleted; a clean download of the same model installed through
+    the staging folder, with no links.
 
 ## Not verified
 
-- A 0.0.2 installer built from this tree, installed and run.
 - A full Computer Use run with a model; the driver refusing a control with no
   name.
 - On the installed app: the settings writer when the host fails, chat
